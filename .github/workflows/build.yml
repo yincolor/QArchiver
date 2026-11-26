@@ -176,6 +176,12 @@ jobs:
           # The CLI/backend tests rely on POSIX-specific temp-file behaviour;
           # keep the portable Qt/unit subset as the Windows gate.
           # CLI/后端测试依赖 POSIX 临时文件行为；Windows 只跑可移植的 Qt/单元子集。
+          # QtTest on Windows sends its PASS/FAIL lines to OutputDebugStringA
+          # when stderr has no console, so ctest shows nothing on failure.
+          # This forces them to stderr, which ctest does capture.
+          # Windows 上 stderr 没有控制台时 QtTest 会把结果写到 OutputDebugStringA，
+          # ctest 因此看不到任何失败信息；这里强制改写到 stderr。
+          $env:QT_FORCE_STDERR_LOGGING = '1'
           ctest --test-dir build -C Release --output-on-failure `
             -R "^(tst_utils|tst_toolchain|tst_background|tst_preferences)$"
 
