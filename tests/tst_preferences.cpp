@@ -29,6 +29,7 @@
 #include "ui/dialogs/PasswordDialog.h"
 #include "ui/dialogs/PreferencesDialog.h"
 #include "ui/dialogs/BenchmarkDialog.h"
+#include "ui/services/UpdateChecker.h"
 
 // The preferences dialog is the only place where the libarchive switch is
 // exposed, so the wiring between the checkbox and AppSettings is tested here.
@@ -48,6 +49,7 @@ private slots:
     void newUiSettingsRoundTrip();
     void layoutSpecificRowsFollowLayoutMode();
     void benchmarkDialogBuilds();
+    void updateVersionComparison();
     void listModeDirectoryIndexPreservesEntries();
     void gridModeHidesParentEntry();
     void thumbnailsEnabledRole();
@@ -386,6 +388,18 @@ void TestPreferences::benchmarkDialogBuilds()
 // List mode uses the directory index: implicit parents, duplicates and the
 // original member spelling survive navigation.
 // 列表模式使用目录索引：隐式父目录、重复项和原始成员名在导航后仍保留。
+void TestPreferences::updateVersionComparison()
+{
+    QVERIFY(UpdateChecker::isNewerVersion(QStringLiteral("v2.4.2"),
+                                         QStringLiteral("2.4.1")));
+    QVERIFY(UpdateChecker::isNewerVersion(QStringLiteral("v2.4.1-1"),
+                                         QStringLiteral("2.4.1")));
+    QVERIFY(!UpdateChecker::isNewerVersion(QStringLiteral("v2.4.1"),
+                                          QStringLiteral("2.4.1")));
+    QVERIFY(!UpdateChecker::isNewerVersion(QStringLiteral("v2.4.0"),
+                                          QStringLiteral("2.4.1")));
+}
+
 void TestPreferences::listModeDirectoryIndexPreservesEntries()
 {
     FileListModel model;

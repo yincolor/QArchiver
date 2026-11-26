@@ -54,6 +54,16 @@ All notable changes to QArchiver (小Q解压) are documented here.
 - 修复无边框主窗口启动时被窗口管理器放到屏幕右下角等任意位置的问题：首次显示
   时在主屏可用区域内居中，之后保留用户手动移动的位置。
 
+## [2.4.2] - 2026-11-26
+
+作者：shenmo <shenmo@spark-app.store>
+
+### Added / 新增
+
+- 帮助菜单新增“检查更新...”，从上游 GitHub Releases Atom 源检查新版本；
+  可显示版本号、Release 说明并打开下载页面。
+- 自动识别 `v2.4.2-1` 这类带打包修订号的版本。
+
 ## [2.4.1] - 2026-11-24
 
 作者：shenmo <shenmo@spark-app.store>
@@ -352,3 +362,4 @@ All notable changes to QArchiver (小Q解压) are documented here.
 [2.4.0-2]: https://github.com/shenmo7192/QArchiver/releases/tag/2.4.0-2
 [2.4.0]: https://github.com/shenmo7192/QArchiver/releases/tag/v2.4.0
 [2.4.1]: https://github.com/shenmo7192/QArchiver/releases/tag/v2.4.1
+[2.4.2]: https://github.com/shenmo7192/QArchiver/releases/tag/v2.4.2

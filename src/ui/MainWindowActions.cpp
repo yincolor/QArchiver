@@ -15,6 +15,7 @@
 #include "ui/services/PreviewManager.h"
 #include "ui/services/PreviewUtils.h"
 #include "ui/services/DragOutManager.h"
+#include "ui/services/UpdateChecker.h"
 #include "ui/widgets/ArchiveTreeView.h"
 #include "ui/widgets/ArchiveGridView.h"
 #include "ui/widgets/BackgroundWidget.h"
@@ -83,6 +84,7 @@
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStandardPaths>
+#include <QUrl>
 #include <QStatusBar>
 #include <QTimer>
 #include <QToolBar>
@@ -251,6 +253,10 @@ void MainWindow::setupActions()
     m_aboutAct = new QAction(tr("About"), this);
     connect(m_aboutAct, &QAction::triggered, this, &MainWindow::onAbout);
 
+    m_checkUpdatesAct = new QAction(tr("Check for Updates..."), this);
+    connect(m_checkUpdatesAct, &QAction::triggered,
+            this, &MainWindow::onCheckUpdates);
+
     m_quitAct = new QAction(tr("Quit"), this);
     m_quitAct->setShortcut(QKeySequence::Quit);
     connect(m_quitAct, &QAction::triggered, qApp, &QApplication::quit);
@@ -280,6 +286,7 @@ void MainWindow::applyActionIcons()
         m_deleteAct->setIcon(modern(QStringLiteral("delete.png")));
         m_closeAct->setIcon(modern(QStringLiteral("close.png")));
         m_prefsAct->setIcon(modern(QStringLiteral("settings.png")));
+        m_checkUpdatesAct->setIcon(modern(QStringLiteral("refresh.png")));
         m_aboutAct->setIcon(modern(QStringLiteral("help.png")));
         m_quitAct->setIcon(modern(QStringLiteral("close.png")));
     } else {
@@ -295,6 +302,7 @@ void MainWindow::applyActionIcons()
         m_deleteAct->setIcon(classic(QStringLiteral("Close.png")));
         m_closeAct->setIcon(classic(QStringLiteral("Close.png")));
         m_prefsAct->setIcon(classic(QStringLiteral("Preferences.png")));
+        m_checkUpdatesAct->setIcon(classic(QStringLiteral("Open.png")));
         m_aboutAct->setIcon(classic(QStringLiteral("About.png")));
         m_quitAct->setIcon(classic(QStringLiteral("Quit.png")));
     }
@@ -302,7 +310,7 @@ void MainWindow::applyActionIcons()
     for (QAction *action : {m_backAct, m_forwardAct, m_upAct,
                             m_openAct, m_newAct, m_extractAct, m_oneClickAct,
                             m_testAct, m_addAct, m_deleteAct, m_closeAct,
-                            m_prefsAct, m_aboutAct, m_quitAct}) {
+                            m_prefsAct, m_checkUpdatesAct, m_aboutAct, m_quitAct}) {
         if (!action) {
             continue;
         }
@@ -398,6 +406,8 @@ void MainWindow::setupMenuBar()
     toolsMenu->addAction(m_prefsAct);
 
     auto *helpMenu = bar->addMenu(tr("&Help"));
+    helpMenu->addAction(m_checkUpdatesAct);
+    helpMenu->addSeparator();
     helpMenu->addAction(m_aboutAct);
 
     bar->show();
@@ -634,4 +644,41 @@ void MainWindow::onAbout()
            "<p>Supports: tar, tar.gz, tar.xz, tar.bz2, zip, 7z, rar, gz, bz2, xz</p>"
            "<p>Version: %1</p>")
             .arg(QCoreApplication::applicationVersion()));
+}
+
+void MainWindow::onCheckUpdates()
+{
+    UpdateChecker &checker = UpdateChecker::instance();
+    disconnect(&checker, nullptr, this, nullptr);
+    connect(&checker, &UpdateChecker::updateAvailable, this,
+            [this](const QString &version, const QString &releaseUrl,
+                   const QString &notes) {
+        QMessageBox box(this);
+        box.setWindowTitle(tr("Update Available"));
+        box.setText(tr("QArchiver %1 is available. You are using %2.")
+                        .arg(version, QCoreApplication::applicationVersion()));
+        box.setTextFormat(Qt::PlainText);
+        if (!notes.isEmpty()) {
+            box.setInformativeText(notes);
+        }
+        QPushButton *openButton = box.addButton(
+            tr("Open Download Page"), QMessageBox::AcceptRole);
+        box.addButton(tr("Later"), QMessageBox::RejectRole);
+        box.exec();
+        if (box.clickedButton() == openButton) {
+            QDesktopServices::openUrl(QUrl(releaseUrl));
+        }
+    });
+    connect(&checker, &UpdateChecker::upToDate, this,
+            [this](const QString &current) {
+        QMessageBox::information(
+            this, tr("Check for Updates"),
+            tr("You are already using the latest version (%1).").arg(current));
+    });
+    connect(&checker, &UpdateChecker::checkFailed, this,
+            [this](const QString &message) {
+        QMessageBox::warning(this, tr("Check for Updates"),
+                             tr("Unable to check for updates:\n%1").arg(message));
+    });
+    checker.check(false);
 }

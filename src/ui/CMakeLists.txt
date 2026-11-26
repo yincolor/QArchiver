@@ -35,6 +35,8 @@ add_library(qarchiver_ui STATIC
     services/DragOutManager.h
     services/ExternalEditManager.cpp
     services/ExternalEditManager.h
+    services/UpdateChecker.cpp
+    services/UpdateChecker.h
 
     # Theming and icon helpers.
     # 主题与图标辅助代码。
@@ -97,7 +99,7 @@ target_include_directories(qarchiver_ui PUBLIC
 )
 
 target_link_libraries(qarchiver_ui
-    PUBLIC qarchiver_core Qt6::Widgets Qt6::Gui
+    PUBLIC qarchiver_core Qt6::Widgets Qt6::Gui Qt6::Network
     PRIVATE Qt6::Concurrent
 )
 

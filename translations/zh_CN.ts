@@ -2177,7 +2177,41 @@ The archive is updated in place. Choosing &quot;Don&apos;t Save&quot; leaves it 
             <source>The archive is busy. Open the file again and save it once the current operation has finished.</source>
             <translation>压缩包正在处理其他操作。请等待当前操作结束后重新打开该文件再保存。</translation>
         </message>
-    </context>
+        <message>
+        <source>Check for Updates...</source>
+        <translation>检查更新...</translation>
+    </message>
+    <message>
+        <source>Update Available</source>
+        <translation>发现新版本</translation>
+    </message>
+    <message>
+        <source>QArchiver %1 is available. You are using %2.</source>
+        <translation>QArchiver %1 已发布，当前版本为 %2。</translation>
+    </message>
+    <message>
+        <source>Open Download Page</source>
+        <translation>打开下载页面</translation>
+    </message>
+    <message>
+        <source>Later</source>
+        <translation>稍后</translation>
+    </message>
+    <message>
+        <source>Check for Updates</source>
+        <translation>检查更新</translation>
+    </message>
+    <message>
+        <source>You are already using the latest version (%1).</source>
+        <translation>当前已是最新版本（%1）。</translation>
+    </message>
+    <message>
+        <source>Unable to check for updates:
+%1</source>
+        <translation>无法检查更新：
+%1</translation>
+    </message>
+</context>
     <context>
         <name>ModernNavBar</name>
         <message>
@@ -3596,4 +3630,15 @@ The file may be missing, or there may be no associated application, insufficient
             <translation>光盘镜像为只读格式</translation>
         </message>
     </context>
+<context>
+    <name>UpdateChecker</name>
+    <message>
+        <source>No release information was found.</source>
+        <translation>未找到发布信息。</translation>
+    </message>
+    <message>
+        <source>The update server returned invalid data.</source>
+        <translation>更新服务器返回了无效数据。</translation>
+    </message>
+</context>
 </TS>

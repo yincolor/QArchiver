@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # QArchiver (小Q解压) is a Qt 6 desktop archive manager.
 # QArchiver（小Q解压）是一个基于 Qt 6 的桌面压缩包管理工具。
 project(QArchiver
-    VERSION 2.4.1
+    VERSION 2.4.2
     LANGUAGES CXX
 )
 
@@ -11,7 +11,7 @@ project(QArchiver
 # CMake project version stays numeric (2.4.1) for compiler/resource metadata.
 # 包/发行修订号用于产物命名与界面版本；CMake 项目版本保持数字形式 2.4.1，
 # 供编译器与 Windows 资源使用。
-set(QARCHIVER_RELEASE_VERSION "2.4.1")
+set(QARCHIVER_RELEASE_VERSION "2.4.2")
 
 # Directory below ${CMAKE_INSTALL_DATADIR} that receives README/CHANGELOG/LICENSE
 # and the bundled 7-Zip license.  Debian packaging overrides this with the
