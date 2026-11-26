@@ -11,7 +11,6 @@ add_library(qarchiver_common STATIC
     ArchiveConstants.h
     ArchiveEntry.h
     ArchiveOptions.h
-    ArchiveError.cpp
     ArchiveError.h
     FormatRegistry.cpp
     FormatRegistry.h

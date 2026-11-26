@@ -7,6 +7,10 @@
 
 #include "backends/ArchiveBackend.h"
 
+#include <QTemporaryDir>
+
+#include <memory>
+
 // Backend for .tar, .tar.gz/.tgz, .tar.xz/.txz, .tar.bz2/.tbz2 and
 // read-only .tar.zst/.tzst (design doc 4.2/5.1/5.2).  All tar operations are
 // delegated to the bundled 7-Zip helper.  Compressed tar files are single-
@@ -63,9 +67,23 @@ private:
                                    const QString &outerDir,
                                    QString &innerTarPath,
                                    QString &errorText);
+    // Return the uncompressed inner tar, reusing the previously extracted
+    // copy while the outer archive's size and modification time are unchanged.
+    // 返回未压缩的内层 tar；外层压缩包大小与修改时间未变时复用上次的结果。
+    InnerTarResult resolveInnerTar(const QString &sevenZip,
+                                   QString &innerTarPath,
+                                   QString &errorText);
     ArchiveFormat m_format;
     QList<ArchiveEntry> m_entries;   // Cached entry list for progress calculation / 缓存的条目列表，用于进度计算
     QString m_nameEncoding = QStringLiteral("UTF-8");
+
+    // Session cache for the two-stage compressed-tar path: listing, testing
+    // and extraction no longer decompress the outer stream each time.
+    // 压缩 tar 两阶段路径的会话缓存：列表、测试与解压不再每次都解压外层流。
+    std::unique_ptr<QTemporaryDir> m_innerTarDir;
+    QString m_innerTarPath;
+    qint64 m_innerTarSize = -1;
+    qint64 m_innerTarMtime = 0;
 };
 
 #endif // TARBACKEND_H

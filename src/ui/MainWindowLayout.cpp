@@ -5,6 +5,7 @@
 // 状态栏与视图模式切换。
 
 #include "ui/MainWindow.h"
+#include "ui/MainWindow_p.h"
 
 #include "ui/MainWindowHelpers.h"
 #include "ui/icons/IconUtils.h"
@@ -46,55 +47,11 @@
 
 #include "backends/ArchiveBackend.h"
 
-#include <QAbstractItemView>
-#include <QAction>
-#include <QApplication>
-#include <QCheckBox>
-#include <QCloseEvent>
-#include <QCoreApplication>
-#include <QDesktopServices>
-#include <QDialog>
-#include <QDir>
-#include <QDockWidget>
-#include <QDrag>
-#include <QDragEnterEvent>
-#include <QDropEvent>
-#include <QElapsedTimer>
-#include <QFileDialog>
-#include <QFileInfo>
-#include <QFrame>
-#include <QFutureWatcher>
-#include <QGuiApplication>
-#include <QHBoxLayout>
-#include <QHeaderView>
-#include <QIcon>
-#include <QItemSelectionModel>
-#include <QKeyEvent>
-#include <QLabel>
-#include <QLineEdit>
-#include <QLocale>
-#include <QMenu>
-#include <QMenuBar>
-#include <QMessageBox>
-#include <QMimeData>
-#include <QProgressBar>
-#include <QPushButton>
 #include <QSignalBlocker>
 #include <QSizeGrip>
 #include <QSlider>
-#include <QSplitter>
-#include <QStackedWidget>
-#include <QStandardPaths>
-#include <QStatusBar>
-#include <QTimer>
-#include <QToolBar>
 #include <QToolButton>
-#include <QTreeView>
-#include <QUrl>
-#include <QVBoxLayout>
-#include <QtConcurrent>
 
-#include <limits>
 
 void MainWindow::setupModernUi()
 {
@@ -753,4 +710,28 @@ QMenu *MainWindow::createSortMenu(QWidget *parent)
         applySort(m_sortColumn, Qt::DescendingOrder);
     });
     return menu;
+}
+
+void MainWindow::applyToolButtonStyle()
+{
+    if (!m_mainToolBar) {
+        return;
+    }
+    const QString style = AppSettings::instance().toolButtonStyle();
+    Qt::ToolButtonStyle buttonStyle = Qt::ToolButtonTextUnderIcon;
+    if (style == QStringLiteral("textBesideIcon")) {
+        buttonStyle = Qt::ToolButtonTextBesideIcon;
+    } else if (style == QStringLiteral("textOnly")) {
+        buttonStyle = Qt::ToolButtonTextOnly;
+    } else if (style == QStringLiteral("iconOnly")) {
+        buttonStyle = Qt::ToolButtonIconOnly;
+    }
+    m_mainToolBar->setToolButtonStyle(buttonStyle);
+}
+
+void MainWindow::applySidebarVisibility()
+{
+    if (m_sidebarDock) {
+        m_sidebarDock->setVisible(AppSettings::instance().showRecentFiles());
+    }
 }

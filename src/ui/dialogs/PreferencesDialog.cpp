@@ -13,6 +13,7 @@
 #include <QCoreApplication>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QScopeGuard>
 #include <QDir>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -611,6 +612,11 @@ void PreferencesDialog::updateBackgroundControls()
 void PreferencesDialog::saveSettings()
 {
     auto &s = AppSettings::instance();
+
+    // ~25 setters: batch them into a single disk sync.
+    // 约 25 次设置：合并为一次磁盘写入。
+    s.beginBatch();
+    const auto endBatch = qScopeGuard([&s]() { s.endBatch(); });
 
     // Layout first: ThemeManager::applyTheme() reads it to choose the modern or
     // Aero style sheet.

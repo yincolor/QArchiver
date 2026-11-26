@@ -139,19 +139,31 @@ bool renameFileWithRetry(const QString &src, const QString &dest)
     return false;
 }
 
-} // namespace
-
-QString FileUtils::canonicalPath(const QString &path)
+// Resolve the nearest existing ancestor of @p path to a canonical path.
+// Symlinks that already exist are resolved, which is what catches a
+// destination tree that pre-contains "link -> outside".
+// 把 @p path 最近的已存在祖先解析为规范化路径。已存在的符号链接会被解析，
+// 用它可以发现目标目录中预先存在的 "link -> outside"。
+QString canonicalExistingPrefix(const QString &path)
 {
-    QFileInfo fi(path);
-    const QString canon = fi.canonicalFilePath();
-    if (canon.isEmpty()) {
-        // File doesn't exist yet; canonicalize the parent.
-        // 文件尚不存在；改为规范化其父目录。
-        return QDir::cleanPath(path);
+    QString current = QDir::cleanPath(path);
+    for (;;) {
+        const QFileInfo info(current);
+        if (info.exists()) {
+            const QString canonical = info.canonicalFilePath();
+            if (!canonical.isEmpty()) {
+                return canonical;
+            }
+        }
+        const QString parent = info.absolutePath();
+        if (parent.isEmpty() || parent == current) {
+            return QString();
+        }
+        current = parent;
     }
-    return canon;
 }
+
+} // namespace
 
 qint64 FileUtils::estimateFreeSpace(const QString &path)
 {
@@ -275,6 +287,15 @@ bool FileUtils::removeDirectoryRecursivelyRaw(const QString &path)
 #endif
 }
 
+bool FileUtils::removeTemporaryDirectory(const QString &path)
+{
+    // Same implementation as the raw variant: the legacy names are only
+    // possible on POSIX, where Raw performs the byte-wise traversal.
+    // 与 Raw 版本实现相同：旧代码页文件名只可能在 POSIX 上出现，那里 Raw
+    // 会按字节遍历删除。
+    return removeDirectoryRecursivelyRaw(path);
+}
+
 bool FileUtils::moveFileAtomically(const QString &src, const QString &dest)
 {
     // Same-filesystem rename preserves permissions, timestamps and symlinks.
@@ -339,6 +360,16 @@ int FileUtils::moveExtractedContents(const QString &srcDir, const QString &destD
             continue;
         }
 
+        // Re-check at move time: the destination may contain a pre-existing
+        // symlink ("link -> outside") that the pre-extraction check could not
+        // see before the temporary tree was filled.
+        // 移动前复查：目标目录中可能预先存在符号链接（"link -> outside"），
+        // 预检在临时目录填充之前无法发现它。
+        if (FileUtils::isPathTraversal(relative, destDir)) {
+            ++failed;
+            continue;
+        }
+
         const QString destPath = QDir(destDir).filePath(relative);
 
         if (item.isDir && !item.isSymLink) {
@@ -383,7 +414,11 @@ int FileUtils::moveExtractedContents(const QString &srcDir, const QString &destD
     // report/retry instead of silently deleting extracted data.
     // 失败时保留临时目录，便于调用方报告或重试，而不是静默删除已解压数据。
     if (failed == 0) {
-        removeDirectoryRecursively(srcDir);
+        // The staging tree may still hold entries skipped by OverwritePolicy
+        // and legacy-codepage names, so use the temporary-tree remover.
+        // 暂存目录可能仍包含被 OverwritePolicy 跳过以及旧代码页名称的条目，
+        // 因此使用临时目录清理函数。
+        removeTemporaryDirectory(srcDir);
     }
     return failed;
 }
@@ -441,18 +476,32 @@ bool FileUtils::isPathTraversal(const QString &entryPath, const QString &destDir
         return true;
     }
 
+    const QString canonicalDest = canonicalExistingPrefix(cleanDest);
+
     // If the target already exists, also compare canonical paths to catch
     // symlinked parent directories that escape the destination.
     // 目标已存在时再比较规范化路径，以捕获通过符号链接父目录逃逸的情况。
     const QFileInfo resolvedInfo(cleanResolved);
     if (resolvedInfo.exists()) {
-        const QString canonicalDest = QFileInfo(cleanDest).canonicalFilePath();
         const QString canonicalResolved = resolvedInfo.canonicalFilePath();
         if (!canonicalDest.isEmpty() && !canonicalResolved.isEmpty()
             && canonicalResolved != canonicalDest
             && !canonicalResolved.startsWith(canonicalDest + QLatin1Char('/'))) {
             return true;
         }
+    }
+
+    // Check the deepest existing ancestor of the parent directory as well.
+    // Without it a pre-existing "dest/link -> outside" passes the check while
+    // the move would follow the link and write outside the destination.
+    // 还要检查父目录中最深的已存在祖先。否则预先存在的 "dest/link -> outside"
+    // 会让检查通过，而移动时却跟随链接写到目标目录之外。
+    const QString parentPath = resolvedInfo.absolutePath();
+    const QString canonicalParent = canonicalExistingPrefix(parentPath);
+    if (!canonicalDest.isEmpty() && !canonicalParent.isEmpty()
+        && canonicalParent != canonicalDest
+        && !canonicalParent.startsWith(canonicalDest + QLatin1Char('/'))) {
+        return true;
     }
 
     return false;

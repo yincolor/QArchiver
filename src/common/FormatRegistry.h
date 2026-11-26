@@ -60,6 +60,18 @@ QString stripArchiveExtension(const QString &fileName);
 // 格式（cab/arj/ace/...）。条目不含点。
 const QStringList &archiveLikeSuffixes();
 
+// Glob patterns of every format QArchiver can open, including split-volume
+// patterns, for file dialogs.  Keeping this next to the suffix registry makes
+// the Open dialog follow new formats automatically.
+// QArchiver 可打开格式的 glob 模式（含分卷），供文件对话框使用。放在后缀
+// 注册表旁边，使新增格式时打开对话框自动跟随。
+const QStringList &openGlobPatterns();
+
+// Suffixes (with leading dot) of every format QArchiver can open, suitable for
+// desktop/file-association lists (no split-volume patterns).
+// QArchiver 可打开格式的后缀（含点），供桌面/文件关联列表使用（不含分卷模式）。
+const QStringList &associationSuffixes();
+
 } // namespace FormatRegistry
 
 #endif // QARCHIVER_COMMON_FORMATREGISTRY_H

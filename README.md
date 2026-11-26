@@ -86,9 +86,10 @@ git push origin 2.4.1
   该阈值只决定是否提示，不限制批量解压总量
 - 常见文件类型图标：图片、音视频、PDF、Office、代码、字体、磁盘映像、电子书、数据库、种子、设计稿、字幕、3D/CAD、安装包等
 - 文件选择使用系统原生对话框；压缩源选择先选择“文件”或“文件夹”，再调用系统对话框
-- 图片缩略图（后台读取/解压并持久缓存）：压缩包条目与本地文件都支持；现代
-  布局的网格/列表/树均显示，现代列表按行高等比缩放并限制宽度；经典布局只在
-  网格视图显示，列表/树保持普通图片图标。双击仍可用系统查看器连续看图
+- 图片缩略图（后台读取/解压并持久缓存，支持 PNG/JPEG/WebP/SVG 等）：压缩包条目
+  与本地文件都支持；现代布局的网格/列表/树均显示，现代列表按行高等比缩放并限制
+  宽度；经典布局只在网格视图显示，列表/树保持普通图片图标。双击仍可用系统查看器
+  连续看图
 - 拖出：把选中条目直接拖到文件管理器/桌面即完成解压并保留目录结构
   （后台解压到 staging 目录，`Esc` 可取消；同一选中项第二次拖动零延迟）
 
@@ -168,7 +169,7 @@ git push origin 2.4.1
 
 | 依赖 | 是否必需 | 说明 |
 | --- | --- | --- |
-| Qt 6.4+（Core Gui Widgets Concurrent） | 必需 | `qt6-base-dev (>= 6.4)` |
+| Qt 6.4+（Core / Gui / Widgets / Concurrent / Svg） | 必需 | `qt6-base-dev (>= 6.4)`、`qt6-svg-dev (>= 6.4)`；`Svg` 用于 `QSvgRenderer` 渲染 SVG 缩略图 |
 | Qt LinguistTools（lupdate/lrelease） | 必需 | `qt6-tools-dev (>= 6.4)`，翻译在构建时编译 |
 | CMake 3.20+、GCC 12+/Clang 15+（C++20） | 必需 | |
 | libarchive 3.4+（开发头文件） | 可选（默认启用） | `libarchive-dev`；缺失时仅 WARNING，自动退回纯命令行后端 |
@@ -181,6 +182,7 @@ git push origin 2.4.1
 | 7-Zip CLI | 已内置 | `third_party/7zip/`（Linux `7zzs`，Windows `7z.exe + 7z.dll`）随程序分发；负责 7z/zip/tar 读写、纯流解压和 RAR 读取 |
 | rar 命令 | 可选 | 系统安装后才会启用 RAR 创建与 RAR 分卷创建；可用 `QARCHIVER_RAR_PATH` 指定路径 |
 | libarchive13 | 启用 libarchive 时必需 | 程序加载的是构建时探测到的共享库 |
+| Qt SVG 运行库 | 必需 | `libqt6svg6`，用于渲染 SVG 缩略图；链接后由 `${shlibs:Depends}` 自动声明。Windows 由 `windeployqt` 部署 `Qt6Svg.dll` |
 | qt6-translations-l10n | 可选 | 提供 `qtbase_<lang>.qm`，用于本地化标准对话框按钮与文件对话框；缺失时应用自身文本仍会翻译 |
 
 构建时会把当前架构的 7-Zip 辅助程序复制到可执行文件旁的 `7zip/`
@@ -241,6 +243,7 @@ dpkg-buildpackage -us -uc -b
 | `-DQARCHIVER_USE_LIBARCHIVE=ON|OFF` | `ON` | 关闭后只编译命令行后端，不链接 libarchive |
 | `-DCMAKE_BUILD_TYPE=Release|Debug|RelWithDebInfo` | 空 | |
 | `-DBUILD_TESTING=OFF` | `ON` | 是否生成 `tests/` |
+| `-DQARCHIVER_ENABLE_SANITIZERS=ON` | `OFF` | 用 ASan + UBSan 构建（仅 GCC/Clang，建议配合 Debug 与 `BUILD_TESTING=ON`） |
 
 若 libarchive 只提供 pkg-config 文件而没有 CMake 配置包，构建脚本会自动
 回退到 `pkg_check_modules`。
@@ -366,7 +369,9 @@ QT_QPA_PLATFORM=offscreen ctest --output-on-failure   # 无显示环境
 libarchive 后端（往返、AES 密码、损坏检测、选择性解压、硬链接重建）、
 偏好对话框与配置同步（连续看图阈值、最近文件上限）、RAR/RAR 分卷创建与
 旧分卷替换、兜底 7-Zip 的 `--help` 校验与 RAR Codecs 探测、图片同目录
-连续预览、列表模式目录索引、背景图片缓存、沉浸式标题栏（布局切换后保留、
+连续预览、一键解压目标规划（复合后缀/分卷首卷/已有目录避让）、SVG 缩略图
+（本地与压缩包内，使用 `QSvgRenderer`）、列表模式目录索引、
+背景图片缓存、沉浸式标题栏（布局切换后保留、
 菜单右侧空白可拖拽、主题 token 配色）、系统位置侧栏（路径去重、子目录高亮、
 文件系统回退）。测试通过
 `QARCHIVER_7Z_PATH` 使用内置
@@ -380,7 +385,7 @@ libarchive 后端（往返、AES 密码、损坏检测、选择性解压、硬�
 
 | 环境变量 | 作用 |
 | --- | --- |
-| `SAM_DEBUG=1` | 输出 Debug 级日志 |
+| `QARCHIVER_DEBUG=1` | 输出 Debug 级日志（旧名 `SAM_DEBUG` 仍兼容） |
 | `QARCHIVER_NO_LIBARCHIVE=1` | 启动即禁用 libarchive 后端 |
 | `QARCHIVER_7Z_PATH` | 显式指定 7-Zip 命令行工具路径，跳过自动探测 |
 | `QARCHIVER_RAR_PATH` | 显式指定 rar 命令路径，用于 RAR 创建 |

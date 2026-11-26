@@ -106,7 +106,7 @@ bool hasArchiveSuffix(const std::wstring &path)
     static const wchar_t *suffixes[] = {
         L".zip", L".7z", L".rar", L".tar", L".gz", L".bz2", L".xz",
         L".tgz", L".txz", L".tbz2", L".tar.gz", L".tar.xz", L".tar.bz2",
-        L".tar.zst", L".zst", L".cab", L".iso"
+        L".tar.zst", L".tzst", L".zst", L".cab", L".iso"
     };
     std::wstring lower = path;
     CharLowerBuffW(lower.data(), static_cast<DWORD>(lower.size()));

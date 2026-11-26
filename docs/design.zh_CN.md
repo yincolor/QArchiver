@@ -55,13 +55,15 @@ QArchiver 是一个基于 Qt 6 的压缩/解压工具，核心思路是：
 | 类别 | 依赖 |
 |---|---|
 | 语言/框架 | C++20、Qt 6.4+（设计目标 6.11.2） |
-| Qt 模块 | Core、Gui、Widgets、Concurrent |
+| Qt 模块 | Core、Gui、Widgets、Concurrent、Svg |
 | 可选模块 | LinguistTools（翻译）、Test（测试） |
-| 库依赖 | libarchive ≥ 3.4（读路径，构建期 `libarchive-dev`，运行期 `libarchive13`） |
+| 库依赖 | libarchive ≥ 3.4（读路径，构建期 `libarchive-dev`，运行期 `libarchive13`）；Qt Svg（运行期 `libqt6svg6` / `Qt6Svg.dll`，用于 SVG 缩略图） |
 | 外部命令 | 内置 7-Zip（`third_party/7zip/`，随程序分发；7z/zip/tar/纯流读写、RAR 读取）；系统 `rar` 可选（创建 RAR/分卷） |
 | Windows 工具链 | 可选：MinGW-w64（Debian 交叉编译）或 MSVC 2022；Qt 6.8 MinGW/MSVC 包（含 `win64_msvc2022_arm64_cross_compiled`） |
 
 7-Zip 辅助程序由 `cmake/QArchiverBundled7zip.cmake` 按目标平台/架构选择，构建后复制到 `<可执行文件目录>/7zip/`；Linux 安装到 `libexec/qarchiver/7zip/`，Windows 安装到 `bindir/7zip/`。运行时 `ProcessRunner::resolveToolPath()` 优先使用内置版本，找不到才回退系统 PATH。Windows 必须同时分发 `7z.exe` 和同版本 `7z.dll`；Windows ARM64 使用 `third_party/7zip/win/arm64/` 的原生二进制，而不是 x64 模拟。
+
+`Svg` 模块用于 `QSvgRenderer` 直接渲染 SVG 缩略图，不依赖 `qsvg` 图片格式插件；Linux 构建依赖 `qt6-svg-dev`、运行期依赖 `libqt6svg6`，Windows 由 `windeployqt` 自动部署 `Qt6Svg.dll`。
 
 ### 2.2 工具链探测与启动检查
 
@@ -116,8 +118,8 @@ src/
 ├── backends/                   ArchiveBackend 及各格式实现
 │   ├── tar/  sevenzip/  rar/  stream/  libarchive/
 ├── core/                       ArchiveManager 与操作编排
-│   ├── ArchiveManager*.{h,cpp}  ArchiveBackendFactory  ExtractionPreflight
-│   ├── CompressOutput  AppSettings  RecentFilesManager
+│   ├── ArchiveManager*.{h,cpp}  OpenController  ArchiveBackendFactory
+│   ├── ExtractionPreflight  CompressOutput  AppSettings  RecentFilesManager
 └── ui/                         全部 Qt Widgets 代码
     ├── MainWindow*.{h,cpp}     按职责拆分的多个实现文件
     ├── models/  services/  theme/  icons/  background/
@@ -132,8 +134,10 @@ CMake 目标与依赖：
 | `qarchiver_utils` | `utils/` | `qarchiver_common` |
 | `qarchiver_backends` | `backends/`（libarchive 后端按开关编译） | `qarchiver_utils` |
 | `qarchiver_core` | `core/` | `qarchiver_common`、`qarchiver_backends` |
-| `qarchiver_ui` | `ui/` | `qarchiver_core`、Qt6::Widgets、Qt6::Gui |
+| `qarchiver_ui` | `ui/` | `qarchiver_core`、Qt6::Widgets、Qt6::Gui、Qt6::Network |
 | `QArchiver` | `main.cpp` + `app/` | `qarchiver_ui` |
+
+`qarchiver_ui` 另外以 PRIVATE 方式链接 `Qt6::Concurrent`（连续看图/缩略图线程）与 `Qt6::Svg`（SVG 缩略图）。
 
 约定：
 
@@ -303,6 +307,7 @@ MainWindow*        ArchiveManager   ArchiveBackend   ProcessRunner   FormatRegis
 |---|---|
 | `ArchiveManager.{h,cpp}` | 对外的薄封装：打开/解压/压缩/追加/删除/测试入口 |
 | `ArchiveManagerDispatch.cpp` | 后端创建、信号连接、终态处理、libarchive 回退、错误映射 |
+| `OpenController.{h,cpp}` | 打开/回退状态机：独占“正在打开”的后端，校验打开状态不变量 |
 | `ArchiveBackendFactory.{h,cpp}` | 按格式和环境选择后端（含 libarchive 开关判断） |
 | `ExtractionPreflight.{h,cpp}` | 解压前检查：路径逃逸、符号链接决策、磁盘序号 |
 | `CompressOutput.{h,cpp}` | 输出路径命名、覆盖策略、临时文件提升与清理 |
@@ -311,11 +316,13 @@ MainWindow*        ArchiveManager   ArchiveBackend   ProcessRunner   FormatRegis
 
 | 文件 | 职责 |
 |---|---|
-| `MainWindow.cpp` | 构造/析构、整体布局装配、页面切换、后端信号处理、事件 |
-| `MainWindowActions.cpp` | QAction/工具栏/菜单的创建与状态更新 |
-| `MainWindowLayout.cpp` | 现代与经典布局的控件树构建 |
+| `MainWindow.cpp` | 构造/析构、页面切换、后端信号处理、输入事件 |
+| `MainWindowMenu.cpp` | QAction 构建、图标与菜单 |
+| `MainWindowActions.cpp` | 菜单/工具栏命令处理与动作状态更新 |
+| `MainWindowLayout.cpp` | 现代与经典布局、工具栏/侧栏、视图切换与状态 |
 | `MainWindowNavigation.cpp` | 路径导航、历史、搜索、视图模式 |
-| `MainWindowExtraction.cpp` | 解压/压缩/一键解压的交互流程 |
+| `MainWindowExtraction.cpp` | 解压/压缩/一键解压的界面编排 |
+| `services/OneClickExtractController.{h,cpp}` | 一键解压状态与目标目录规划 |
 | `MainWindowDragOut.cpp` | 拖出（staging）与 `LoggingMimeData` |
 | `MainWindowHelpers.{h,cpp}` | 文件对话框过滤器、体积格式化等纯函数 |
 
@@ -372,11 +379,11 @@ TarZst, Zstd  // 新增只读格式追加在末尾，保持持久化整数值稳
 Unknown, OperationNotSupported, UnsupportedFormat,
 PasswordRequired, WrongPassword, CorruptedArchive,
 InsufficientDiskSpace, PathTraversalBlocked, VolumeMissing,
-ToolNotFound, FileNotFound, PermissionDenied, PathTooLong,
+ToolNotFound, FileNotFound, PermissionDenied,
 EncodingError, PartialExtraction, HardLinkUnsupported, Cancelled
 ```
 
-`ArchiveException` 及其子类携带错误码和消息。后端通常通过 `errorOccurred(code, msg)` 报告错误，由 `ArchiveManager` 统一转发给 UI。
+错误通过 `errorOccurred(code, msg)` 信号上报，由 `ArchiveManager` 统一转发给 UI；后端不使用异常传递错误。
 
 ## 5. 核心接口
 
@@ -439,7 +446,8 @@ passwordRequested, errorOccurred, operationFinished
 
 | 文件 | 职责 |
 |---|---|
-| `core/ArchiveManager.cpp` | 状态机与对外接口的薄封装：校验参数、派发操作、维护 generation |
+| `core/ArchiveManager.cpp` | 对外接口的薄封装：校验参数、派发操作、维护 generation |
+| `core/OpenController.cpp` | 打开/回退状态机：独占“正在打开”的后端、force-CLI 重开、状态不变量校验 |
 | `core/ArchiveManagerDispatch.cpp` | 后端创建与信号连接、终态处理、libarchive 回退重放、错误映射 |
 | `core/ArchiveBackendFactory.cpp` | 格式 → 后端的选择规则（含 libarchive 可用性与开关判断） |
 | `core/ExtractionPreflight.cpp` | 解压前的路径逃逸、符号链接决策与磁盘检查 |
@@ -652,7 +660,7 @@ Rar4/Rar5，列表/解压/测试复用 7z 后端。
 分派规则：
 
 - `ArchiveBackendFactory::createForRead()` 在“格式支持且非分卷且未关闭偏好开关（`backends/useLibArchive`）且未设置 `QARCHIVER_NO_LIBARCHIVE`”时返回 `LibArchiveBackend`，否则返回对应命令行后端。`ArchiveBackendFactory::isLibArchiveAvailable()` 暴露编译期能力，供设置对话框禁用开关。
-- 运行期失败（`UnsupportedFormat` / `CorruptedArchive` / `WrongPassword` 等）时，`ArchiveManagerDispatch.cpp` 中的 `tryLibArchiveFallback()` 重建命令行后端、重新 `openArchive` 并**重放当前待处理操作**（列表 / 解压 / 校验，含“解压前校验”链路）；每个归档只回退一次。取消、路径穿越、磁盘空间等错误不回退。
+- 运行期失败（`UnsupportedFormat` / `CorruptedArchive` / `WrongPassword` 等）时，`ArchiveManagerDispatch.cpp` 中的 `tryLibArchiveFallback()` 重建命令行后端、重新 `openArchive` 并**重放当前待处理操作**（列表 / 解压 / 校验，含“解压前校验”链路）；回退标记与“正在打开”的后端由 `OpenController` 独占，每个归档只回退一次。取消、路径穿越、磁盘空间等错误不回退。
 - 回退时不再向 UI 重复发 `archiveOpened`，只在日志与输出面板记录一条提示。若无法创建命令行后端，会清除 busy 与待重试状态并报告原错误，不会卡在忙碌状态。
 
 实现要点：
@@ -911,7 +919,7 @@ GUI 不会被阻塞；进度对话框保持到操作真正结束。
 
 - 启动时 `src/app/` 的初始化流程将日志写入 `QStandardPaths::CacheLocation` 下的 `app.log`。
 - 在 Linux 上通常为 `~/.cache/QArchiver/QArchiver/app.log`（受 `XDG_CACHE_HOME` 影响）。
-- 需要查看更多调试信息时，可用环境变量 `SAM_DEBUG=1` 启动以开启 Debug 级别日志。
+- 需要查看更多调试信息时，可用环境变量 `QARCHIVER_DEBUG=1` 启动以开启 Debug 级别日志（旧名 `SAM_DEBUG` 仍兼容）。
 - 界面不提供“日志”按钮；查看日志时直接打开上述 `app.log` 文件即可。
 
 已知限制：
@@ -958,7 +966,7 @@ GUI 不会被阻塞；进度对话框保持到操作真正结束。
   （网络挂载可能较慢）。经典布局不提供系统位置侧栏。
 - 本版本不提供压缩包属性对话框：该信息与文件管理器的“文件属性”弹窗重复，故工具栏“属性”按钮与右键菜单“属性”项均已移除。
 - 双击文件：预览。图片会静默预解压同目录图片，交给系统查看器连续浏览。
-- 图片缩略图由 `ThumbnailManager` 按需生成：压缩包内的图片由独立读取后端在小型线程池中解压单张，本地文件则直接读取；两者都缩放到 128px 内并写入持久缓存，缓存键包含文件大小与修改时间。模型收到完成信号后只刷新对应图标。现代布局各视图都启用缩略图，列表视图按行高（约 22px）等比例缩放、宽度上限 96px；经典布局只在网格视图启用，列表/树保持普通图片图标。
+- 图片缩略图由 `ThumbnailManager` 按需生成：压缩包内的图片由独立读取后端在小型线程池中解压单张，本地文件则直接读取；两者都缩放到 128px 内并写入持久缓存，缓存键包含文件大小与修改时间。SVG 使用 `QSvgRenderer`（`Qt6::Svg`）直接按缩略图尺寸渲染，不依赖 `qsvg` 图片格式插件；其他格式仍由 `QImageReader` 读取。模型收到完成信号后只刷新对应图标。现代布局各视图都启用缩略图，列表视图按行高（约 22px）等比例缩放、宽度上限 96px；经典布局只在网格视图启用，列表/树保持普通图片图标。
 - 网格模式双击目录：进入目录；不显示 `..`，通过“上一级”按钮返回。网格使用
   `ArchiveGridView`（`QListView::IconMode`）和自定义 delegate，支持多选、
   右键菜单、拖出与详细信息联动。delegate 的 `sizeHint()` 返回完整网格单元，
@@ -1298,13 +1306,16 @@ resources/
 | 测试 | 覆盖范围 |
 |---|---|
 | `tst_utils` | 路径规范化、Zip Slip 判断、7-Zip `-slt` 流式解析、成员名空格、大小溢出检查、符号链接目标与解压树复查、旧编码检测与代码页映射、`LogLineBuffer` 的 CR/CRLF/跨块切行 |
+| `tst_oneclick` | 一键解压目标命名（复合后缀、分卷首卷）、已有目录避让、自定义根目录创建与可写性、完成/打开目标选项、pending/active 状态切换 |
 | `tst_toolchain` | 7-Zip `--help` 校验、系统 PATH 回退、RAR Codecs 解析、`QARCHIVER_7Z_PATH` 覆盖 |
 | `tst_background` | 背景图片九种对齐的字符串往返、尺寸缩放规则、目标矩形、透明度绘制、路径+mtime+大小缓存（offscreen 平台运行） |
 | `tst_backends` | tar/tar.gz/tar.xz/tar.bz2/tar.zst/zip/7z/gzip 往返、纯 gz/bz2/xz 创建往返、tar.zst/zst 读取、tar 追加删除、纯 `.gz` 的 tar 探测、`.` 前缀与非 ASCII 文件名、旧编码 ZIP 的检测与选中解压（`-slt` 编码投票只采 `Path =` 行）、RAR 读取/分卷/创建能力、危险符号链接失败后的临时目录清理 |
 | `tst_preview` | 连续看图的后缀筛选、同目录选取、大小写不敏感、跳过符号链接/子目录、准备对话框阈值、批量解压样例 |
 | `tst_manager` | 打开/列表/解压流程、打开失败保留当前包、危险符号链接跳过/中止、覆盖已有目标压缩、RAR 分卷替换、加密 7z 回退命令行、图片同目录连续预览、后端选择开关、只读 libarchive 后端的添加/删除写回退 |
+| `tst_navstate` | 经典布局起始页进入本地浏览、命令行任务未完成时不提前扫描、本地目录异步枚举、只读后端写回重开后的路径框刷新（现代/经典布局） |
+| `tst_externaledit` | 外部编辑写回：按原成员路径替换、取消不改动、内容未变忽略、危险暂存路径拒绝、旧编码成员名按原始字节写回 |
 | `tst_libarchive` | zip / tar.gz / tar.xz / gz 往返、AES-256 zip 密码、加密 7z 报不支持、损坏包检测、选择性解压、目录选中、硬链接重建、不带 UTF-8 标志的 GB18030 与 Big5 名称自动解码（含落盘文件名）、显式 `encodingHint` 覆盖检测 |
-| `tst_preferences` | 偏好设置中 libarchive 开关与 `AppSettings` 的双向联动、连续看图阈值与最近文件上限裁剪、布局/一键解压设置往返、性能测试对话框构建、列表模式目录索引/重复项、网格模式隐藏 `..`、压缩包/本地缩略图上下文与异步生成、缩略图开关与等比缩放、分卷图标（offscreen 平台运行） |
+| `tst_preferences` | 偏好设置中 libarchive 开关与 `AppSettings` 的双向联动、连续看图阈值与最近文件上限裁剪、布局/一键解压设置往返、性能测试对话框构建、列表模式目录索引/重复项、网格模式隐藏 `..`、压缩包/本地缩略图上下文与异步生成、SVG 缩略图（本地与压缩包内，`QSvgRenderer`）、缩略图开关与等比缩放、分卷图标（offscreen 平台运行） |
 | `tst_titlebar` | 沉浸式标题栏与布局切换：菜单栏不拉伸（空白区可拖拽）、空白处拖拽/双击最大化、`teardownUi()`/`buildUi()` 后标题栏仍挂在 menuWidget 槽位、误调 `menuBar()` 后可自愈、标题栏颜色使用主题 token（offscreen 平台运行） |
 | `tst_windowresize` | 无边框窗口缩放：八个边缘/角落命中区、窗口重建后保持置顶、最大化时禁用（offscreen 平台运行） |
 | `tst_breadcrumb` | 面包屑路径框：压缩包/本地路径拆分、用“...”收纳中间层级、省略顺序、只读完整路径文本、主题化箭头分隔符（offscreen 平台运行） |
@@ -1322,10 +1333,10 @@ SOURCES ... LIBS ... DATA_DIR ...)` 注册：链接分层静态库而不是复�
 |---|---|
 | `tst_toolchain` | `qarchiver_utils` |
 | `tst_utils`、`tst_backends`、`tst_libarchive` | `qarchiver_core` |
-| `tst_background`、`tst_preview`、`tst_manager`、`tst_dragout`、`tst_preferences`、`tst_titlebar`、`tst_windowresize`、`tst_breadcrumb`、`tst_folderpane` | `qarchiver_ui` |
+| `tst_background`、`tst_preview`、`tst_manager`、`tst_dragout`、`tst_externaledit`、`tst_navstate`、`tst_preferences`、`tst_titlebar`、`tst_windowresize`、`tst_breadcrumb`、`tst_folderpane`、`tst_oneclick` | `qarchiver_ui` |
 
 `tst_libarchive` 只在找到 libarchive 时构建，因此 `-DQARCHIVER_USE_LIBARCHIVE=OFF`
-的构建会运行 12 个测试而不是 13 个；其余测试在两种配置下都必须通过。
+的构建会运行 15 个测试而不是 16 个；其余测试在两种配置下都必须通过。
 
 运行：
 

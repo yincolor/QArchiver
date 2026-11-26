@@ -13,15 +13,22 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QLabel>
 #include <QPushButton>
 #include <QPlainTextEdit>
+#include <QScopeGuard>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QUuid>
 
+#include "backends/sevenzip/ZipBackend.h"
+#include "common/FormatRegistry.h"
 #include "core/ArchiveBackendFactory.h"
 #include "core/AppSettings.h"
 #include "core/ArchiveManager.h"
 #include "core/RecentFilesManager.h"
+#include "ui/MainWindowHelpers.h"
 #include "ui/icons/FileTypeHelper.h"
 #include "ui/models/FileListViewDelegate.h"
 #include "ui/models/FileListModel.h"
@@ -30,6 +37,7 @@
 #include "ui/dialogs/PreferencesDialog.h"
 #include "ui/dialogs/BenchmarkDialog.h"
 #include "ui/services/UpdateChecker.h"
+#include "utils/ProcessRunner.h"
 
 // The preferences dialog is the only place where the libarchive switch is
 // exposed, so the wiring between the checkbox and AppSettings is tested here.
@@ -45,6 +53,9 @@ private slots:
     void libArchiveCheckboxDisabledWithoutLibrary();
     void passwordDialogUsesRememberSetting();
     void configurableLimitsAreClamped();
+    void settingsBatchWrites();
+    void localBrowsePathIsDebounced();
+    void archiveDialogFilterCoversFormats();
     void recentFilesLimitTrimsImmediately();
     void newUiSettingsRoundTrip();
     void layoutSpecificRowsFollowLayoutMode();
@@ -55,6 +66,9 @@ private slots:
     void thumbnailsEnabledRole();
     void localThumbnailContextRole();
     void localThumbnailGenerated();
+    void localSvgThumbnailGenerated();
+    void thumbnailBatchExtraction();
+    void thumbnailCacheLifecycle();
     void thumbnailDisplaySize();
     void splitVolumeIcons();
     void fileTypeKindPriority();
@@ -232,6 +246,17 @@ void TestPreferences::passwordDialogUsesRememberSetting()
         QVERIFY(settings.rememberPasswords());
     }
 
+    // A retry prompt explains that the previous password was rejected.
+    // 重试提示会说明上一次密码被拒绝。
+    {
+        PasswordDialog dialog(nullptr, true);
+        auto *hint = dialog.findChild<QLabel *>(QStringLiteral("PasswordHint"));
+        QVERIFY(hint);
+        QVERIFY(hint->text().contains(QStringLiteral("incorrect"),
+                                      Qt::CaseInsensitive));
+        QVERIFY(!hint->text().contains(QStringLiteral("This archive is encrypted")));
+    }
+
     settings.setRememberPasswords(saved);
 }
 
@@ -254,6 +279,86 @@ void TestPreferences::configurableLimitsAreClamped()
     QCOMPARE(settings.recentFilesLimit(), 100);
     settings.setRecentFilesLimit(7);
     QCOMPARE(settings.recentFilesLimit(), 7);
+}
+
+// The Open dialog is generated from the format registry, so every registry
+// pattern must be present and the translated labels must stay in place.
+// 打开对话框由格式注册表生成：必须包含全部模式，并保留可翻译的标签。
+void TestPreferences::archiveDialogFilterCoversFormats()
+{
+    const QString filter = MainWindowHelpers::archiveDialogFilter();
+    QVERIFY(filter.startsWith(QStringLiteral("Archives (")));
+    for (const QString &pattern : FormatRegistry::openGlobPatterns()) {
+        QVERIFY2(filter.contains(pattern), qPrintable(pattern));
+    }
+    QVERIFY(filter.endsWith(QStringLiteral(";;All Files (*)")));
+}
+
+// beginBatch()/endBatch() make the new values visible immediately while
+// writing the file only once at the end.
+// beginBatch()/endBatch() 让新值立即可见，而文件只在结束时写入一次。
+void TestPreferences::settingsBatchWrites()
+{
+    AppSettings &s = AppSettings::instance();
+    const int savedLevel = s.defaultCompressionLevel();
+    const int batchedLevel = savedLevel == 7 ? 8 : 7;
+
+    // Read the settings file directly: QSettings instances for the same file
+    // share an in-memory cache, so a second QSettings would not prove that the
+    // batch really reached the disk.
+    // 直接读取设置文件：同一文件的 QSettings 实例共享内存缓存，第二个实例无法
+    // 证明批次真的落盘。
+    const auto diskLevelIs = [this](int level) {
+        QFile file(m_settingsFile);
+        if (!file.open(QIODevice::ReadOnly)) {
+            return false;
+        }
+        const QString text = QString::fromUtf8(file.readAll());
+        return text.contains(QStringLiteral("defaultLevel=%1").arg(level));
+    };
+
+    s.beginBatch();
+    s.setDefaultCompressionLevel(batchedLevel);
+    QCOMPARE(s.defaultCompressionLevel(), batchedLevel);
+
+    // Nested batches must not flush the outer one.
+    // 嵌套批次不能提前写入外层批次。
+    s.beginBatch();
+    s.endBatch();
+    QCOMPARE(s.defaultCompressionLevel(), batchedLevel);
+    QVERIFY(!diskLevelIs(batchedLevel));
+
+    s.endBatch();
+    QVERIFY(diskLevelIs(batchedLevel));
+
+    s.setDefaultCompressionLevel(savedLevel);
+    QCOMPARE(s.defaultCompressionLevel(), savedLevel);
+}
+
+// The last-visited local directory is written after a short debounce so rapid
+// navigation does not sync the settings file on every step.
+// 上次浏览的本地目录在短暂延迟后写入，连续导航不会每步都写设置文件。
+void TestPreferences::localBrowsePathIsDebounced()
+{
+    AppSettings &s = AppSettings::instance();
+    const QString saved = s.localBrowsePath();
+    const QString marker = QStringLiteral("/tmp/qarchiver-debounce-test");
+
+    const auto diskContains = [this](const QString &text) {
+        QFile file(m_settingsFile);
+        if (!file.open(QIODevice::ReadOnly)) {
+            return false;
+        }
+        return QString::fromUtf8(file.readAll()).contains(text);
+    };
+
+    s.setLocalBrowsePath(marker);
+    QCOMPARE(s.localBrowsePath(), marker); // visible in memory immediately
+    QTest::qWait(150);                     // shorter than the debounce interval
+    QVERIFY(!diskContains(marker));
+
+    QTRY_VERIFY_WITH_TIMEOUT(diskContains(marker), 3000);
+    s.setLocalBrowsePath(saved);
 }
 
 // Reducing the recent-files limit trims the stored history without waiting
@@ -569,6 +674,163 @@ void TestPreferences::localThumbnailGenerated()
         imagePath, info.size(), info.lastModified());
     QVERIFY(!cached.isNull());
     QVERIFY(!cached.availableSizes().isEmpty());
+}
+
+// SVG thumbnails are rendered with QSvgRenderer rather than QImageReader, so
+// they do not depend on the qsvg image-format plugin being deployed.
+// SVG 缩略图使用 QSvgRenderer 渲染，不依赖 qsvg 图片格式插件是否部署。
+void TestPreferences::localSvgThumbnailGenerated()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString svgPath = temp.filePath(QStringLiteral("icon.SVG"));
+    QFile file(svgPath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const QByteArray svg = QByteArrayLiteral(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" "
+        "width=\"64\" height=\"32\">"
+        "<rect width=\"64\" height=\"32\" fill=\"red\"/>"
+        "</svg>");
+    QCOMPARE(file.write(svg), svg.size());
+    file.close();
+
+    const QFileInfo info(svgPath);
+    QSignalSpy readySpy(&ThumbnailManager::instance(),
+                        &ThumbnailManager::localThumbnailReady);
+    ThumbnailManager::instance().localIcon(
+        svgPath, info.size(), info.lastModified());
+
+    QTRY_VERIFY_WITH_TIMEOUT(readySpy.count() >= 1, 5000);
+    QCOMPARE(readySpy.first().at(0).toString(), svgPath);
+
+    const QIcon cached = ThumbnailManager::instance().localIcon(
+        svgPath, info.size(), info.lastModified());
+    QVERIFY(!cached.isNull());
+    const QList<QSize> sizes = cached.availableSizes();
+    QVERIFY(!sizes.isEmpty());
+    // The 2:1 SVG must keep its aspect ratio in the 128px thumbnail box.
+    // 2:1 的 SVG 在 128px 缩略图框内必须保持宽高比。
+    QCOMPARE(sizes.constFirst(), QSize(128, 64));
+}
+
+// Several thumbnails from the same archive are collected in one batch and
+// extracted with a single backend call; all of them must still become available,
+// including an SVG rendered without the qsvg image-format plugin.
+// 同一压缩包的多个缩略图会合并成一批、只调用一次后端解压；包括不依赖 qsvg
+// 图片格式插件渲染的 SVG 在内，全部都必须可用。
+void TestPreferences::thumbnailBatchExtraction()
+{
+    if (ProcessRunner::resolveToolPath(QStringLiteral("7z")).isEmpty()) {
+        QSKIP("the 7z tool is required for this test");
+    }
+
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    QImage image(48, 24, QImage::Format_ARGB32);
+    image.fill(Qt::green);
+    const QString firstPath = temp.filePath(QStringLiteral("a.png"));
+    const QString secondPath = temp.filePath(QStringLiteral("b.png"));
+    const QString svgPath = temp.filePath(QStringLiteral("c.svg"));
+    QVERIFY(image.save(firstPath));
+    QVERIFY(image.save(secondPath));
+    QFile svgFile(svgPath);
+    QVERIFY(svgFile.open(QIODevice::WriteOnly));
+    const QByteArray svg = QByteArrayLiteral(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" "
+        "width=\"32\" height=\"32\">"
+        "<circle cx=\"16\" cy=\"16\" r=\"16\" fill=\"blue\"/>"
+        "</svg>");
+    QCOMPARE(svgFile.write(svg), svg.size());
+    svgFile.close();
+
+    const QString archive = temp.filePath(QStringLiteral("images.zip"));
+    ZipBackend writer;
+    QSignalSpy finished(&writer, &ArchiveBackend::operationFinished);
+    QSignalSpy errors(&writer, &ArchiveBackend::errorOccurred);
+    CompressOptions options;
+    options.archivePath = archive;
+    options.sourceFiles = {firstPath, secondPath, svgPath};
+    options.compressionLevel = 0;
+    writer.compress(options);
+    QVERIFY(errors.isEmpty());
+    QCOMPARE(finished.count(), 1);
+    QVERIFY(finished.first().at(0).toBool());
+
+    ThumbnailManager &thumbs = ThumbnailManager::instance();
+    thumbs.clearArchiveCache();
+    QSignalSpy readySpy(&thumbs, &ThumbnailManager::thumbnailReady);
+    thumbs.icon(archive, ArchiveFormat::Zip, QStringLiteral("a.png"), 0,
+                QString());
+    thumbs.icon(archive, ArchiveFormat::Zip, QStringLiteral("b.png"), 0,
+                QString());
+    thumbs.icon(archive, ArchiveFormat::Zip, QStringLiteral("c.svg"), 0,
+                QString());
+
+    QTRY_VERIFY_WITH_TIMEOUT(readySpy.count() >= 3, 15000);
+
+    const QIcon cachedFirst = thumbs.icon(
+        archive, ArchiveFormat::Zip, QStringLiteral("a.png"), 0, QString());
+    const QIcon cachedSecond = thumbs.icon(
+        archive, ArchiveFormat::Zip, QStringLiteral("b.png"), 0, QString());
+    const QIcon cachedSvg = thumbs.icon(
+        archive, ArchiveFormat::Zip, QStringLiteral("c.svg"), 0, QString());
+    QVERIFY(!cachedFirst.availableSizes().isEmpty());
+    QVERIFY(!cachedSecond.availableSizes().isEmpty());
+    QVERIFY(!cachedSvg.availableSizes().isEmpty());
+
+    thumbs.cleanupOwn();
+}
+
+// Thumbnail caches must be releasable per context and clean up leftovers from
+// crashed runs; clearing the in-memory state keeps the disk cache reusable.
+// 缩略图缓存必须能按上下文释放并清理崩溃残留；清理内存状态后磁盘缓存仍可复用。
+void TestPreferences::thumbnailCacheLifecycle()
+{
+    const bool wasTestMode = QStandardPaths::isTestModeEnabled();
+    QStandardPaths::setTestModeEnabled(true);
+    const auto restore = qScopeGuard([wasTestMode] {
+        QStandardPaths::setTestModeEnabled(wasTestMode);
+    });
+
+    ThumbnailManager &thumbs = ThumbnailManager::instance();
+    const QString root =
+        QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
+            .filePath(QStringLiteral("thumbnails"));
+
+    // A crashed extraction can leave an "extract-*" directory behind.
+    // 崩溃的解压可能残留 "extract-*" 目录。
+    const QString leftover = QDir(root).filePath(
+        QStringLiteral("extract-tst-%1")
+            .arg(QUuid::createUuid().toString(QUuid::Id128)));
+    QVERIFY(QDir().mkpath(leftover + QStringLiteral("/sub")));
+    thumbs.cleanupStale();
+    QVERIFY(!QDir(leftover).exists());
+
+    // Generate a thumbnail, drop the in-memory cache, then verify the disk
+    // cache still serves it: clearArchiveCache() only frees memory.
+    // 生成缩略图、清空内存缓存后确认磁盘缓存仍可用：clearArchiveCache()
+    // 只释放内存。
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QString imagePath = temp.filePath(QStringLiteral("image.png"));
+    QImage image(24, 12, QImage::Format_ARGB32);
+    image.fill(Qt::blue);
+    QVERIFY(image.save(imagePath));
+    const QFileInfo info(imagePath);
+
+    QSignalSpy readySpy(&thumbs, &ThumbnailManager::localThumbnailReady);
+    thumbs.localIcon(imagePath, info.size(), info.lastModified());
+    QTRY_VERIFY_WITH_TIMEOUT(readySpy.count() >= 1, 5000);
+
+    thumbs.clearArchiveCache();
+    const QIcon cached =
+        thumbs.localIcon(imagePath, info.size(), info.lastModified());
+    QVERIFY(!cached.isNull());
+    QVERIFY(!cached.availableSizes().isEmpty());
+
+    // Shutdown waits for worker tasks and must not crash.
+    thumbs.cleanupOwn();
 }
 
 // Thumbnails in the modern list are fitted to the row height; width follows

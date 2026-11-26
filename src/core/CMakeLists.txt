@@ -6,6 +6,11 @@ add_library(qarchiver_core STATIC
     ArchiveManager.cpp
     ArchiveManager.h
 
+    # Opening/fallback state machine (opening backend and libarchive fallback).
+    # 打开/回退状态机（正在打开的后端与 libarchive 回退）。
+    OpenController.cpp
+    OpenController.h
+
     # Worker-thread dispatch (signals, terminal handling, error/fallback).
     # 工作线程调度（信号连接、终止处理、错误/回退分发）。
     ArchiveManagerDispatch.cpp

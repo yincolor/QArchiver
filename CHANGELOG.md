@@ -44,6 +44,17 @@ All notable changes to QArchiver (小Q解压) are documented here.
 - 经典布局不再显示“无压缩包”占位页作为起始页：启动、从现代布局切换过来以及
   选择“文件 → 起始页”时，只要没有打开压缩包就直接进入本地文件浏览；命令行启动
   即带压缩包或外壳任务时不会预先扫描本地目录。现代布局仍以欢迎页为起始页。
+- 打开/回退状态机从 `ArchiveManager` 抽成 `OpenController`：管理器只持有最终
+  后端，“正在打开”的后端由控制器独占，并在打开、回退、出错与关闭处校验状态
+  不变量；打开失败仍保留原压缩包。新增 `tst_manager` 现有用例继续覆盖回退、
+  写回重开与失败保留。
+- `MainWindow` 继续按职责拆分：`MainWindowMenu.cpp` 负责动作/菜单构建，
+  `MainWindowActions.cpp` 只留命令处理与状态更新；布局相关函数归入
+  `MainWindowLayout.cpp`；一键解压的目标规划与状态抽成
+  `OneClickExtractController`，新增 `tests/tst_oneclick.cpp`。
+- 压缩包缩略图按每批最多 64 个成员解压；切换压缩包/目录时会对已运行的批次
+  请求取消，不再把旧上下文的图片全部解压完。
+- 本地目录扫描期间在状态栏显示“正在读取 …”，超大目录不再看起来像卡住。
 
 ### Fixed / 修复
 
@@ -51,6 +62,9 @@ All notable changes to QArchiver (小Q解压) are documented here.
   必现）的问题：为执行写操作而重开只读 libarchive 后端属于内部细节，既不再发出
   `archiveOpening`，列表就绪后两种布局也都会刷新路径框（此前只刷新现代布局，经典
   布局的面包屑会停在占位文本上）。新增 `tests/tst_navstate.cpp` 回归测试。
+- 修复 `.svg` 图片在本地浏览和压缩包内都不显示缩略图的问题：缩略图渲染改用
+  `QSvgRenderer`（链接 `Qt6::Svg`），不再依赖 `QImageReader` 的 `qsvg` 图片格式
+  插件；同时缩放至缩略图框内并保持宽高比。新增 SVG 缩略图回归测试。
 - 修复无边框主窗口启动时被窗口管理器放到屏幕右下角等任意位置的问题：首次显示
   时在主屏可用区域内居中，之后保留用户手动移动的位置。
 

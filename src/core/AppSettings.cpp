@@ -7,6 +7,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QSettings>
+#include <QTimer>
 
 #include <algorithm>
 
@@ -28,7 +29,19 @@ AppSettings::AppSettings()
         m_settings->value(QStringLiteral("backends/useLibArchive"), true).toBool());
 }
 
-AppSettings::~AppSettings() = default;
+AppSettings::~AppSettings()
+{
+    // QSettings' own destructor syncs the in-memory map.  The debounced local
+    // directory is flushed by main()/flushPendingWrites() instead: a test or a
+    // crash-adjacent exit should not recreate the settings file removed by its
+    // cleanup.
+    // QSettings 析构时会落盘内存数据。防抖中的本地目录由 main() /
+    // flushPendingWrites() 负责写入：测试或异常退出不应重新创建清理时删除的
+    // 设置文件。
+    if (m_settings) {
+        m_settings->sync();
+    }
+}
 
 AppSettings &AppSettings::instance()
 {
@@ -44,7 +57,29 @@ QVariant AppSettings::value(const QString &key, const QVariant &defaultValue) co
 void AppSettings::setValue(const QString &key, const QVariant &value)
 {
     m_settings->setValue(key, value);
-    m_settings->sync();
+    syncIfNotBatching();
+}
+
+void AppSettings::syncIfNotBatching()
+{
+    if (m_batchDepth == 0) {
+        m_settings->sync();
+    }
+}
+
+void AppSettings::beginBatch()
+{
+    ++m_batchDepth;
+}
+
+void AppSettings::endBatch()
+{
+    if (m_batchDepth > 0) {
+        --m_batchDepth;
+    }
+    if (m_batchDepth == 0) {
+        m_settings->sync();
+    }
 }
 
 static int toInt(ArchiveFormat fmt)
@@ -227,8 +262,9 @@ bool AppSettings::useLibArchiveBackend() const
 
 QString AppSettings::localBrowsePath() const
 {
-    const QString path = value(QStringLiteral("ui/localBrowsePath"), QString())
-                             .toString();
+    const QString path = m_hasPendingLocalBrowsePath
+        ? m_pendingLocalBrowsePath
+        : value(QStringLiteral("ui/localBrowsePath"), QString()).toString();
     return path.isEmpty() ? QDir::homePath() : path;
 }
 
@@ -433,7 +469,37 @@ void AppSettings::setBackgroundImageOpacity(qreal opacity)
 
 void AppSettings::setLocalBrowsePath(const QString &path)
 {
-    setValue(QStringLiteral("ui/localBrowsePath"), path);
+    // Debounce: keep the value in memory and write it only after a quiet
+    // period, so walking through directories does not sync on every step.
+    // 防抖：先保存在内存，安静一段时间后才写入；浏览目录时不再每步落盘。
+    m_pendingLocalBrowsePath = path;
+    m_hasPendingLocalBrowsePath = true;
+    if (!m_localBrowseSyncTimer) {
+        m_localBrowseSyncTimer = new QTimer(this);
+        m_localBrowseSyncTimer->setSingleShot(true);
+        m_localBrowseSyncTimer->setInterval(500);
+        connect(m_localBrowseSyncTimer, &QTimer::timeout, this, [this]() {
+            flushLocalBrowsePath();
+            syncIfNotBatching();
+        });
+    }
+    m_localBrowseSyncTimer->start();
+}
+
+void AppSettings::flushPendingWrites()
+{
+    flushLocalBrowsePath();
+    syncIfNotBatching();
+}
+
+void AppSettings::flushLocalBrowsePath()
+{
+    if (!m_hasPendingLocalBrowsePath) {
+        return;
+    }
+    m_hasPendingLocalBrowsePath = false;
+    m_settings->setValue(QStringLiteral("ui/localBrowsePath"),
+                         m_pendingLocalBrowsePath);
 }
 
 void AppSettings::setBackgroundImageOptions(const QString &path,
@@ -460,7 +526,7 @@ void AppSettings::setBackgroundImageOptions(const QString &path,
                          std::max(0, size.height()));
     m_settings->setValue(QStringLiteral("ui/backgroundImageOpacity"),
                          std::clamp(opacity, 0.0, 1.0));
-    m_settings->sync();
+    syncIfNotBatching();
     emit backgroundImageChanged();
 }
 

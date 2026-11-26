@@ -15,7 +15,8 @@ class QCheckBox;
 class PasswordDialog : public QDialog {
     Q_OBJECT
 public:
-    explicit PasswordDialog(QWidget *parent = nullptr);
+    explicit PasswordDialog(QWidget *parent = nullptr,
+                            bool wrongPassword = false);
 
     QString password() const;
     bool rememberPassword() const;

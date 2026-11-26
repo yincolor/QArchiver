@@ -8,8 +8,8 @@ project(QArchiver
 )
 
 # Package/release revision shown to users and used for artifact names.  The
-# CMake project version stays numeric (2.4.1) for compiler/resource metadata.
-# 包/发行修订号用于产物命名与界面版本；CMake 项目版本保持数字形式 2.4.1，
+# CMake project version stays numeric for compiler/resource metadata.
+# 包/发行修订号用于产物命名与界面版本；CMake 项目版本保持数字形式，
 # 供编译器与 Windows 资源使用。
 set(QARCHIVER_RELEASE_VERSION "2.4.2")
 
@@ -28,6 +28,26 @@ set(QARCHIVER_DOC_DIR "doc/qarchiver" CACHE STRING
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Optional sanitizer build for the test suite (GCC/Clang only).
+# 可选的测试用 sanitizer 构建（仅 GCC/Clang）。
+#   cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+#         -DQARCHIVER_ENABLE_SANITIZERS=ON -DBUILD_TESTING=ON
+option(QARCHIVER_ENABLE_SANITIZERS
+    "Build with AddressSanitizer + UndefinedBehaviorSanitizer (GCC/Clang)" OFF)
+if(QARCHIVER_ENABLE_SANITIZERS)
+    if(MSVC)
+        message(WARNING
+            "QARCHIVER_ENABLE_SANITIZERS is only supported with GCC/Clang")
+    else()
+        add_compile_options(
+            -fsanitize=address,undefined
+            -fno-omit-frame-pointer
+            -fno-sanitize-recover=undefined
+        )
+        add_link_options(-fsanitize=address,undefined)
+    endif()
+endif()
 
 # Minimum supported Qt version.  All find_package() calls use this value so
 # Qt 6.4+ distributions (Debian 12 / Ubuntu 22.04+) can build QArchiver.

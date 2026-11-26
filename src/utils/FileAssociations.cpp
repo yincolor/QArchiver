@@ -10,6 +10,8 @@
 #include <QProcess>
 #include <QStandardPaths>
 
+#include "common/FormatRegistry.h"
+
 #ifdef Q_OS_LINUX
 #include "utils/MimeAppsList.h"
 #endif
@@ -28,16 +30,9 @@ namespace {
 
 const QStringList &formatExtensions()
 {
-    static const QStringList exts = {
-        QStringLiteral(".zip"),   QStringLiteral(".7z"),
-        QStringLiteral(".rar"),   QStringLiteral(".tar"),
-        QStringLiteral(".gz"),    QStringLiteral(".bz2"),
-        QStringLiteral(".xz"),    QStringLiteral(".tgz"),
-        QStringLiteral(".txz"),   QStringLiteral(".tbz2"),
-        QStringLiteral(".tar.gz"), QStringLiteral(".tar.xz"),
-        QStringLiteral(".tar.bz2"), QStringLiteral(".iso")
-    };
-    return exts;
+    // Single source of truth: the format registry also drives the Open dialog.
+    // 唯一事实来源：格式注册表同时驱动打开对话框。
+    return FormatRegistry::associationSuffixes();
 }
 
 QString description(const QString &extension)
@@ -77,6 +72,13 @@ QString description(const QString &extension)
     if (extension == QLatin1String(".tbz2")
         || extension == QLatin1String(".tar.bz2")) {
         return translate("Bzip2 tar archive");
+    }
+    if (extension == QLatin1String(".zst")) {
+        return translate("Zstd file");
+    }
+    if (extension == QLatin1String(".tzst")
+        || extension == QLatin1String(".tar.zst")) {
+        return translate("Zstd tar archive");
     }
     if (extension == QLatin1String(".iso")) {
         return translate("Disc image");

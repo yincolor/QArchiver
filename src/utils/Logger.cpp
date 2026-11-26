@@ -12,9 +12,11 @@
 
 Logger::Logger()
 {
-    // Enable debug logging via environment variable SAM_DEBUG=1
-    // 通过环境变量 SAM_DEBUG=1 启用调试日志
-    if (qEnvironmentVariableIsSet("SAM_DEBUG")) {
+    // Enable debug logging via QARCHIVER_DEBUG=1.  SAM_DEBUG is kept as a
+    // compatibility alias for older scripts and bug reports.
+    // 通过 QARCHIVER_DEBUG=1 启用调试日志；SAM_DEBUG 作为旧脚本/反馈的兼容别名保留。
+    if (qEnvironmentVariableIsSet("QARCHIVER_DEBUG")
+        || qEnvironmentVariableIsSet("SAM_DEBUG")) {
         m_minLevel = Debug;
     }
 }

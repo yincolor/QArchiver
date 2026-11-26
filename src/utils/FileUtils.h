@@ -16,10 +16,6 @@ struct ArchiveEntry;
 // File/path utility functions / 文件与路径辅助函数
 class FileUtils {
 public:
-    // Canonicalize a path (resolve symlinks, remove .. and .)
-    // 规范化路径（解析符号链接，移除 .. 与 .）
-    static QString canonicalPath(const QString &path);
-
     // Estimate free disk space (bytes) at the given path; -1 on failure
     // 估算指定路径的可用磁盘空间（字节）；失败返回 -1
     static qint64 estimateFreeSpace(const QString &path);
@@ -72,6 +68,15 @@ public:
     // 文件名（stageFileForArchiving() 创建的旧代码页暂存目录树）。
     // Linux 上 Qt 的目录迭代无法删除这类名称，因此按原始字节遍历。
     static bool removeDirectoryRecursivelyRaw(const QString &path);
+
+    // Remove an extraction temporary directory.  Backends must use this for
+    // their ".tmp_extract_*" trees: on POSIX they can contain names in a
+    // legacy code page that QDir cannot represent, so the raw-byte traversal
+    // is required there; Windows uses the regular recursive removal.
+    // 删除解压临时目录。后端必须用它清理 ".tmp_extract_*" 目录树：POSIX 上
+    // 这些目录可能包含 QDir 无法表示的旧代码页文件名，需要按原始字节遍历；
+    // Windows 使用普通递归删除。
+    static bool removeTemporaryDirectory(const QString &path);
 
     // Atomically move (rename) a file; cross-filesystem fallback to copy+delete.
     // Symlinks are preserved as symlinks.

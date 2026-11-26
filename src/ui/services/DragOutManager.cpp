@@ -57,7 +57,6 @@ bool DragOutManager::isRetryableWithCli(ArchiveErrorCode code)
     case ArchiveErrorCode::EncodingError:
     case ArchiveErrorCode::CorruptedArchive:
     case ArchiveErrorCode::VolumeMissing:
-    case ArchiveErrorCode::PathTooLong:
     case ArchiveErrorCode::Unknown:
         return true;
     default:
@@ -345,6 +344,8 @@ DragOutPayload DragOutManager::takePreparedFor(const QString &archivePath,
 
 void DragOutManager::clearCache()
 {
+    // Only the index: see the header for why the staged files stay on disk.
+    // 只清索引：暂存文件保留在磁盘上的原因见头文件说明。
     m_cache.clear();
 }
 

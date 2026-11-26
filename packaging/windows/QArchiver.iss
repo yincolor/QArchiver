@@ -118,7 +118,7 @@ const
 
 function ArchiveExtensions: TArrayOfString;
 begin
-  SetArrayLength(Result, 13);
+  SetArrayLength(Result, 17);
   Result[0] := '.zip';
   Result[1] := '.7z';
   Result[2] := '.rar';
@@ -132,6 +132,10 @@ begin
   Result[10] := '.tar.gz';
   Result[11] := '.tar.xz';
   Result[12] := '.tar.bz2';
+  Result[13] := '.tar.zst';
+  Result[14] := '.tzst';
+  Result[15] := '.zst';
+  Result[16] := '.iso';
 end;
 
 procedure RemoveStaleShellExtension(Root: Integer);

@@ -6,6 +6,7 @@ Build-Depends: debhelper-compat (= 13),
                cmake (>= 3.20),
                g++ (>= 12) | clang (>= 15),
                qt6-base-dev (>= 6.4),
+               qt6-svg-dev (>= 6.4),
                qt6-tools-dev (>= 6.4),
                libarchive-dev (>= 3.4),
                pkg-config

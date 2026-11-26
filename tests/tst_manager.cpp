@@ -5,8 +5,10 @@
 #include <QtTest>
 
 #include <QDesktopServices>
+#include <QDir>
 #include <QFile>
 #include <QProcess>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -47,6 +49,40 @@ public slots:
     }
 };
 
+namespace {
+
+// Create a 7z archive with encrypted headers and payload (password
+// "classified").  Returns an empty string when the 7z tool is unavailable.
+// 创建文件头与内容都加密（密码 "classified"）的 7z 压缩包；没有 7z 时返回空。
+QString createEncrypted7z(const QString &dir)
+{
+    const QString sevenZip = ProcessRunner::resolveToolPath(QStringLiteral("7z"));
+    if (sevenZip.isEmpty()) {
+        return QString();
+    }
+    const QString payload = QDir(dir).filePath(QStringLiteral("secret.txt"));
+    {
+        QFile file(payload);
+        if (!file.open(QIODevice::WriteOnly)
+            || file.write(QByteArrayLiteral("classified")) != 10) {
+            return QString();
+        }
+    }
+    const QString archive = QDir(dir).filePath(QStringLiteral("secret.7z"));
+    QProcess process;
+    process.setWorkingDirectory(dir);
+    process.start(sevenZip,
+                  {QStringLiteral("a"), QStringLiteral("-bso0"),
+                   QStringLiteral("-bsp0"), QStringLiteral("-pclassified"),
+                   QStringLiteral("-mhe=on"), archive, payload});
+    if (!process.waitForFinished(60000) || process.exitCode() != 0) {
+        return QString();
+    }
+    return archive;
+}
+
+} // namespace
+
 class TestManager : public QObject {
     Q_OBJECT
 
@@ -55,6 +91,8 @@ private slots:
     void openListExtract();
     void compressOverwritesExistingTarget();
     void encrypted7zFallsBackToCli();
+    void passwordRetrySucceeds();
+    void passwordRetryLimit();
     void rarSplitCompressionReplacesVolumes();
     void continuousPreviewExtractsSiblingImages();
     void openFailurePreservesCurrentArchive();
@@ -63,6 +101,7 @@ private slots:
     void addDeleteReopensReadOnlyBackend();
     void externalEditWriteBackThroughReopen();
     void isoImageIsReadOnly();
+    void workerShutdownIsCooperative();
 };
 
 // Prepare the manager test environment.
@@ -119,6 +158,10 @@ void TestManager::openListExtract()
     manager.listContents();
     QTRY_COMPARE_WITH_TIMEOUT(listSpy.count(), 1, 10000);
     QVERIFY(!manager.entries().isEmpty());
+    // The manager caches the encoding reported by the backend, so extraction
+    // does not have to read the worker-owned member.
+    // 管理器缓存后端上报的编码，解压时无需读取工作线程持有的成员。
+    QCOMPARE(manager.nameEncoding(), QStringLiteral("UTF-8"));
 
     const QString dest = temp.filePath(QStringLiteral("out"));
     QSignalSpy finishSpy(&manager, &ArchiveManager::operationFinished);
@@ -134,6 +177,7 @@ void TestManager::openListExtract()
     QCOMPARE(extracted.readAll(), QByteArrayLiteral("manager-data"));
 
     manager.closeArchive();
+    QCOMPARE(manager.nameEncoding(), QString());
 }
 
 // A disc image is opened through the normal read path and stays read-only.
@@ -313,6 +357,130 @@ void TestManager::encrypted7zFallsBackToCli()
 #else
     QSKIP("built without libarchive");
 #endif
+}
+
+// A wrong password must keep the pending operation and ask again; the second,
+// correct password completes the listing.
+// 密码错误时必须保留待处理操作并再次询问；第二次输入正确密码后完成列表。
+void TestManager::passwordRetrySucceeds()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QString archive = createEncrypted7z(temp.path());
+    if (archive.isEmpty()) {
+        QSKIP("the 7z tool is required for this test");
+    }
+
+    AppSettings &settings = AppSettings::instance();
+    const bool savedLibArchive = settings.useLibArchiveBackend();
+    settings.setUseLibArchiveBackend(false);
+    const auto restore = qScopeGuard([savedLibArchive] {
+        AppSettings::instance().setUseLibArchiveBackend(savedLibArchive);
+    });
+
+    ArchiveManager &manager = ArchiveManager::instance();
+    QSignalSpy openedSpy(&manager, &ArchiveManager::archiveOpened);
+    QSignalSpy listSpy(&manager, &ArchiveManager::fileListReady);
+    QSignalSpy errorSpy(&manager, &ArchiveManager::errorOccurred);
+
+    // The context object removes the connection even if a QVERIFY returns early.
+    // 上下文对象保证即使 QVERIFY 提前返回也会断开连接。
+    QObject promptContext;
+    int prompts = 0;
+    QList<bool> wrongFlags;
+    connect(&manager, &ArchiveManager::passwordRequested, &promptContext,
+            [&](bool wrongPassword) {
+                ++prompts;
+                wrongFlags.append(wrongPassword);
+                manager.retryWithPassword(
+                    prompts == 1 ? QStringLiteral("wrong")
+                                 : QStringLiteral("classified"));
+            },
+            Qt::DirectConnection);
+
+    manager.openArchive(archive);
+    QTRY_COMPARE_WITH_TIMEOUT(openedSpy.count(), 1, 10000);
+
+    // The encrypted header makes the first listing ask for a password.
+    // 加密文件头使第一次列表就请求密码。
+    manager.listContents();
+    QTRY_COMPARE_WITH_TIMEOUT(listSpy.count(), 1, 30000);
+    QCOMPARE(prompts, 2);
+    QCOMPARE(wrongFlags, (QList<bool>{false, true}));
+    QCOMPARE(errorSpy.count(), 0);
+    QVERIFY(manager.nameEncoding() == QLatin1String("UTF-8")
+            || !manager.nameEncoding().isEmpty());
+
+    // Extraction with the correct password must not prompt again, and must
+    // start from a fresh retry budget.
+    // 使用正确密码解压不应再次弹窗，并重新计算尝试次数。
+    QSignalSpy finishSpy(&manager, &ArchiveManager::operationFinished);
+    ExtractOptions options;
+    options.destDir = temp.filePath(QStringLiteral("out"));
+    options.overwrite = OverwritePolicy::Always;
+    options.password = QStringLiteral("classified");
+    manager.extract(options);
+    QTRY_COMPARE_WITH_TIMEOUT(finishSpy.count(), 1, 30000);
+    QVERIFY2(finishSpy.first().at(0).toBool(),
+             qPrintable(finishSpy.first().at(1).toString()));
+    QCOMPARE(prompts, 2);
+    QVERIFY(QFileInfo::exists(
+        temp.filePath(QStringLiteral("out/secret.txt"))));
+
+    manager.closeArchive();
+}
+
+// After the attempt budget is exhausted the manager reports WrongPassword and
+// releases the pending operation; a new listing still works.
+// 尝试次数用尽后管理器报告 WrongPassword 并释放待处理操作；随后重新列表仍可用。
+void TestManager::passwordRetryLimit()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QString archive = createEncrypted7z(temp.path());
+    if (archive.isEmpty()) {
+        QSKIP("the 7z tool is required for this test");
+    }
+
+    AppSettings &settings = AppSettings::instance();
+    const bool savedLibArchive = settings.useLibArchiveBackend();
+    settings.setUseLibArchiveBackend(false);
+    const auto restore = qScopeGuard([savedLibArchive] {
+        AppSettings::instance().setUseLibArchiveBackend(savedLibArchive);
+    });
+
+    ArchiveManager &manager = ArchiveManager::instance();
+    QSignalSpy openedSpy(&manager, &ArchiveManager::archiveOpened);
+    QSignalSpy listSpy(&manager, &ArchiveManager::fileListReady);
+    QSignalSpy errorSpy(&manager, &ArchiveManager::errorOccurred);
+
+    QObject promptContext;
+    int prompts = 0;
+    connect(&manager, &ArchiveManager::passwordRequested, &promptContext,
+            [&](bool) {
+                ++prompts;
+                manager.retryWithPassword(QStringLiteral("wrong"));
+            },
+            Qt::DirectConnection);
+
+    manager.openArchive(archive);
+    QTRY_COMPARE_WITH_TIMEOUT(openedSpy.count(), 1, 10000);
+
+    manager.listContents();
+    QTRY_COMPARE_WITH_TIMEOUT(errorSpy.count(), 1, 30000);
+    QCOMPARE(prompts, 3);
+    QCOMPARE(errorSpy.first().at(0).value<ArchiveErrorCode>(),
+             ArchiveErrorCode::WrongPassword);
+    QCOMPARE(listSpy.count(), 0);
+
+    // The failed retry chain must not poison later operations.
+    // 失败的重试链不能影响后续操作。
+    ListOptions options;
+    options.password = QStringLiteral("classified");
+    manager.listContents(options);
+    QTRY_COMPARE_WITH_TIMEOUT(listSpy.count(), 1, 30000);
+
+    manager.closeArchive();
 }
 
 // Creating RAR volumes through the manager replaces an older volume set.
@@ -880,3 +1048,17 @@ void TestManager::backendSelectionHonoursPreference()
 QTEST_GUILESS_MAIN(TestManager)
 
 #include "tst_manager.moc"
+
+// The worker thread stops cooperatively (no QThread::terminate()) and
+// shutdown() is safe to call more than once.  Declared last: the singleton is
+// not usable after shutdown.
+// 工作线程协作停止（不使用 QThread::terminate()），shutdown() 可重复调用。
+// 声明在最后：关闭后单例不再可用。
+void TestManager::workerShutdownIsCooperative()
+{
+    ArchiveManager &manager = ArchiveManager::instance();
+    manager.shutdown();
+    manager.shutdown();
+    QVERIFY(!manager.backend());
+    QVERIFY(!manager.isBusy());
+}

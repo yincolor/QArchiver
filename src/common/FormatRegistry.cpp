@@ -278,6 +278,58 @@ QString stripArchiveExtension(const QString &fileName)
     return name;
 }
 
+const QStringList &openGlobPatterns()
+{
+    static const QStringList patterns = {
+        QStringLiteral("*.tar"),
+        QStringLiteral("*.tar.gz"),
+        QStringLiteral("*.tgz"),
+        QStringLiteral("*.tar.xz"),
+        QStringLiteral("*.txz"),
+        QStringLiteral("*.tar.bz2"),
+        QStringLiteral("*.tbz2"),
+        QStringLiteral("*.tar.zst"),
+        QStringLiteral("*.tzst"),
+        QStringLiteral("*.zip"),
+        QStringLiteral("*.zip.*"),
+        QStringLiteral("*.7z"),
+        QStringLiteral("*.7z.*"),
+        QStringLiteral("*.rar"),
+        QStringLiteral("*.part*.rar"),
+        QStringLiteral("*.r??"),
+        QStringLiteral("*.gz"),
+        QStringLiteral("*.bz2"),
+        QStringLiteral("*.xz"),
+        QStringLiteral("*.zst"),
+        QStringLiteral("*.iso")
+    };
+    return patterns;
+}
+
+const QStringList &associationSuffixes()
+{
+    static const QStringList suffixes = {
+        QStringLiteral(".zip"),
+        QStringLiteral(".7z"),
+        QStringLiteral(".rar"),
+        QStringLiteral(".tar"),
+        QStringLiteral(".tar.gz"),
+        QStringLiteral(".tgz"),
+        QStringLiteral(".tar.xz"),
+        QStringLiteral(".txz"),
+        QStringLiteral(".tar.bz2"),
+        QStringLiteral(".tbz2"),
+        QStringLiteral(".tar.zst"),
+        QStringLiteral(".tzst"),
+        QStringLiteral(".gz"),
+        QStringLiteral(".bz2"),
+        QStringLiteral(".xz"),
+        QStringLiteral(".zst"),
+        QStringLiteral(".iso")
+    };
+    return suffixes;
+}
+
 const QStringList &archiveLikeSuffixes()
 {
     static const QStringList suffixes = {

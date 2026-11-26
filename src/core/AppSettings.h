@@ -18,6 +18,7 @@
 #include "common/ArchiveConstants.h"
 
 class QSettings;
+class QTimer;
 
 // Singleton wrapping QSettings for global preferences (design doc 4.6).
 // 使用 QSettings 封装全局偏好设置的单例（设计文档 4.6）。
@@ -130,6 +131,22 @@ public:
     void setBackgroundImageOptions(const QString &path, const QString &alignment,
                                    const QSize &size, qreal opacity);
 
+    // Group many setters into a single disk sync (e.g. the preferences
+    // dialog).  Getters still return the new values immediately because
+    // QSettings keeps them in memory.  endBatch() flushes once, so callers
+    // should pair both calls (RAII guard recommended).
+    // 把多次写入合并为一次落盘（例如偏好设置对话框）。读取接口仍立即返回新值，
+    // 因为 QSettings 会在内存中保留；endBatch() 只落盘一次，建议用 RAII 配对。
+    void beginBatch();
+    void endBatch();
+
+    // Write debounced values (currently the last-visited local directory) and
+    // sync immediately.  Called by main() before the application exits so a
+    // navigation in the last 500 ms is not lost.
+    // 立即写入防抖中的值（当前是上次浏览的本地目录）并落盘。由 main() 在退出
+    // 前调用，避免最后 500 ms 内的导航丢失。
+    void flushPendingWrites();
+
 signals:
     // Emitted whenever one of the background image options changes.
     // 任一背景图片选项变化时发出。
@@ -147,8 +164,20 @@ private:
     QVariant value(const QString &key, const QVariant &defaultValue = QVariant()) const;
     void setValue(const QString &key, const QVariant &value);
 
+    void syncIfNotBatching();
+    void flushLocalBrowsePath();
+
     std::unique_ptr<QSettings> m_settings;
     std::atomic_bool m_useLibArchive{true};
+    int m_batchDepth = 0;
+    // Debounces the last-visited local directory: rapid navigation updates the
+    // in-memory value (returned by the getter) but writes the file only once
+    // the user stops moving for a moment.
+    // 对上次浏览的本地目录做防抖：连续导航只更新内存值（getter 立即可见），
+    // 停止操作片刻后才写一次设置文件。
+    QTimer *m_localBrowseSyncTimer = nullptr;
+    bool m_hasPendingLocalBrowsePath = false;
+    QString m_pendingLocalBrowsePath;
 };
 
 #endif // APPSETTINGS_H

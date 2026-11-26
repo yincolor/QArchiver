@@ -4,6 +4,8 @@
 
 #include "backends/tar/TarBackend.h"
 
+#include "backends/ExtractionUtils.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -59,77 +61,6 @@ QString compressionSwitch(ArchiveFormat fmt)
     }
 }
 
-bool isUnderSkipped(const QString &path, const QSet<QString> &skipped)
-{
-    if (skipped.isEmpty()) {
-        return false;
-    }
-    const QString normalized = FileUtils::normalizeEntryPath(path);
-    if (skipped.contains(normalized)) {
-        return true;
-    }
-    for (const QString &prefix : skipped) {
-        if (normalized.startsWith(prefix + QLatin1Char('/'))) {
-            return true;
-        }
-    }
-    return false;
-}
-
-QStringList buildExtractionSelection(const QList<ArchiveEntry> &entries,
-                                     const ExtractOptions &options)
-{
-    QSet<QString> skipped;
-    for (const QString &path : options.skippedSymlinks) {
-        const QString normalized = FileUtils::normalizeEntryPath(path);
-        if (!normalized.isEmpty()) {
-            skipped.insert(normalized);
-        }
-    }
-
-    QStringList selected;
-    QSet<QString> seen;
-    auto add = [&](const QString &rawPath) {
-        const QString normalized = FileUtils::normalizeEntryPath(rawPath);
-        // The archive-root "." entry expands to the whole tree in 7-Zip and
-        // would defeat the member filter, including skipped symlinks.
-        // 归档根目录的 "." 条目会让 7-Zip 展开整棵树，从而绕过成员过滤
-        // （包括被跳过的符号链接），因此必须排除。
-        if (normalized.isEmpty() || normalized == QStringLiteral(".")
-            || isUnderSkipped(normalized, skipped)
-            || seen.contains(normalized)) {
-            return;
-        }
-        seen.insert(normalized);
-        selected << rawPath;
-    };
-
-    if (!options.selectedFiles.isEmpty()) {
-        for (const QString &path : options.selectedFiles) {
-            add(path);
-        }
-        return selected;
-    }
-    if (skipped.isEmpty()) {
-        return selected;
-    }
-    for (const ArchiveEntry &entry : entries) {
-        add(entry.path);
-    }
-    return selected;
-}
-
-bool looksLikeCorruption(const QString &errorText)
-{
-    return errorText.contains(QStringLiteral("Can not open"), Qt::CaseInsensitive)
-        || errorText.contains(QStringLiteral("Cannot open"), Qt::CaseInsensitive)
-        || errorText.contains(QStringLiteral("is not archive"), Qt::CaseInsensitive)
-        || errorText.contains(QStringLiteral("Unexpected end"), Qt::CaseInsensitive)
-        || errorText.contains(QStringLiteral("Data Error"), Qt::CaseInsensitive)
-        || errorText.contains(QStringLiteral("CRC"), Qt::CaseInsensitive)
-        || errorText.contains(QStringLiteral("Headers Error"), Qt::CaseInsensitive);
-}
-
 } // namespace
 
 TarBackend::TarBackend(ArchiveFormat fmt, QObject *parent)
@@ -165,6 +96,11 @@ int TarBackend::validateCompressionLevel(int level) const
 
 void TarBackend::openArchive(const QString &filePath)
 {
+    m_innerTarPath.clear();
+    m_innerTarDir.reset();
+    m_innerTarSize = -1;
+    m_innerTarMtime = 0;
+
     const QFileInfo info(filePath);
     if (!info.exists()) {
         emit errorOccurred(ArchiveErrorCode::FileNotFound,
@@ -249,6 +185,48 @@ TarBackend::InnerTarResult TarBackend::extractInnerTar(const QString &sevenZip,
     return InnerTarResult::Ok;
 }
 
+TarBackend::InnerTarResult TarBackend::resolveInnerTar(const QString &sevenZip,
+                                                       QString &innerTarPath,
+                                                       QString &errorText)
+{
+    if (!isCompressed()) {
+        innerTarPath = m_archivePath;
+        return InnerTarResult::Ok;
+    }
+
+    const QFileInfo archiveInfo(m_archivePath);
+    const qint64 size = archiveInfo.size();
+    const qint64 mtime = archiveInfo.lastModified().toMSecsSinceEpoch();
+    if (!m_innerTarPath.isEmpty() && QFileInfo::exists(m_innerTarPath)
+        && m_innerTarSize == size && m_innerTarMtime == mtime) {
+        innerTarPath = m_innerTarPath;
+        return InnerTarResult::Ok;
+    }
+
+    // The archive changed (or this is the first request): drop the old stage
+    // and unpack the outer stream once for this session.
+    // 压缩包发生变化（或首次请求）：丢弃旧缓存，为本次会话解压一次外层流。
+    m_innerTarPath.clear();
+    m_innerTarDir = std::make_unique<QTemporaryDir>(
+        QDir::tempPath() + QStringLiteral("/qarchiver-tar-cache-XXXXXX"));
+    if (!m_innerTarDir->isValid()) {
+        errorText = tr("Cannot create a temporary directory");
+        return InnerTarResult::Failed;
+    }
+
+    const InnerTarResult result = extractInnerTar(
+        sevenZip, m_innerTarDir->path(), innerTarPath, errorText);
+    if (result != InnerTarResult::Ok) {
+        m_innerTarDir.reset();
+        innerTarPath.clear();
+        return result;
+    }
+    m_innerTarPath = innerTarPath;
+    m_innerTarSize = size;
+    m_innerTarMtime = mtime;
+    return result;
+}
+
 void TarBackend::listContents(const ListOptions &options)
 {
     Q_UNUSED(options);
@@ -265,25 +243,16 @@ void TarBackend::listContents(const ListOptions &options)
     }
 
     QString target = m_archivePath;
-    std::unique_ptr<QTemporaryDir> outerDir;
     if (isCompressed()) {
-        outerDir = std::make_unique<QTemporaryDir>(
-            QDir::tempPath() + QStringLiteral("/qarchiver-tar-list-XXXXXX"));
-        if (!outerDir->isValid()) {
-            emit errorOccurred(ArchiveErrorCode::PermissionDenied,
-                               tr("Cannot create a temporary directory"));
-            return;
-        }
-
         QString errorText;
-        const InnerTarResult innerResult = extractInnerTar(
-            sevenZip, outerDir->path(), target, errorText);
+        const InnerTarResult innerResult =
+            resolveInnerTar(sevenZip, target, errorText);
         if (innerResult == InnerTarResult::Cancelled) {
             emit errorOccurred(ArchiveErrorCode::Cancelled, tr("Operation cancelled"));
             return;
         }
         if (innerResult == InnerTarResult::Failed) {
-            emit errorOccurred(looksLikeCorruption(errorText)
+            emit errorOccurred(ExtractionUtils::looksLikeCorruption(errorText)
                                    ? ArchiveErrorCode::CorruptedArchive
                                    : ArchiveErrorCode::Unknown,
                                errorText.isEmpty()
@@ -324,7 +293,7 @@ void TarBackend::listContents(const ListOptions &options)
     }
     if (!result.success()) {
         const QString errorText = result.stdErr.trimmed();
-        emit errorOccurred(looksLikeCorruption(errorText)
+        emit errorOccurred(ExtractionUtils::looksLikeCorruption(errorText)
                                ? ArchiveErrorCode::CorruptedArchive
                                : ArchiveErrorCode::Unknown,
                            errorText.isEmpty() ? tr("Failed to list archive") : errorText);
@@ -368,30 +337,20 @@ void TarBackend::extract(const ExtractOptions &options)
 
     QDir().mkpath(options.destDir);
     const QString tempDir = FileUtils::createTempExtractDir(options.destDir);
-    std::unique_ptr<QTemporaryDir> outerDir;
     QString target = m_archivePath;
 
     if (isCompressed()) {
-        outerDir = std::make_unique<QTemporaryDir>(
-            QDir::tempPath() + QStringLiteral("/qarchiver-tar-extract-XXXXXX"));
-        if (!outerDir->isValid()) {
-            FileUtils::removeDirectoryRecursively(tempDir);
-            emit errorOccurred(ArchiveErrorCode::PermissionDenied,
-                               tr("Cannot create a temporary directory"));
-            return;
-        }
-
         QString errorText;
-        const InnerTarResult innerResult = extractInnerTar(
-            sevenZip, outerDir->path(), target, errorText);
+        const InnerTarResult innerResult =
+            resolveInnerTar(sevenZip, target, errorText);
         if (innerResult == InnerTarResult::Cancelled) {
-            FileUtils::removeDirectoryRecursively(tempDir);
+            FileUtils::removeTemporaryDirectory(tempDir);
             emit errorOccurred(ArchiveErrorCode::Cancelled, tr("Operation cancelled"));
             return;
         }
         if (innerResult == InnerTarResult::Failed) {
-            FileUtils::removeDirectoryRecursively(tempDir);
-            emit errorOccurred(looksLikeCorruption(errorText)
+            FileUtils::removeTemporaryDirectory(tempDir);
+            emit errorOccurred(ExtractionUtils::looksLikeCorruption(errorText)
                                    ? ArchiveErrorCode::CorruptedArchive
                                    : ArchiveErrorCode::Unknown,
                                errorText.isEmpty()
@@ -410,17 +369,17 @@ void TarBackend::extract(const ExtractOptions &options)
 
     SevenZipUtils::ListFile membersFile(QStringLiteral("tar-members"));
     const QStringList selectedPaths =
-        buildExtractionSelection(m_entries, options);
+        ExtractionUtils::buildExtractionSelection(m_entries, options);
     if (!selectedPaths.isEmpty()) {
         if (!SevenZipUtils::appendListFileArgs(
                 membersFile, selectedPaths, m_nameEncoding, args)) {
-            FileUtils::removeDirectoryRecursively(tempDir);
+            FileUtils::removeTemporaryDirectory(tempDir);
             emit errorOccurred(ArchiveErrorCode::Unknown,
                                tr("Could not prepare the selected files for extraction"));
             return;
         }
     } else if (!options.skippedSymlinks.isEmpty()) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit operationFinished(true, tr("No files were extracted"));
         return;
     }
@@ -460,17 +419,17 @@ void TarBackend::extract(const ExtractOptions &options)
         outputOptions);
 
     if (result.cancelled) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::Cancelled, tr("Operation cancelled"));
         return;
     }
     if (!result.started) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::ToolNotFound, tr("Failed to start 7z"));
         return;
     }
     if (!result.success()) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::Unknown,
                            tr("Extraction failed: %1").arg(result.stdErr.trimmed()));
         return;
@@ -482,7 +441,7 @@ void TarBackend::extract(const ExtractOptions &options)
     }
 
     if (!FileUtils::unsafeExtractedSymlinks(tempDir).isEmpty()) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::PathTraversalBlocked,
                            tr("Blocked unsafe symbolic link during extraction"));
         return;
@@ -491,7 +450,7 @@ void TarBackend::extract(const ExtractOptions &options)
     const int failedMoves = FileUtils::moveExtractedContents(
         tempDir, options.destDir, options.overwrite, options.preservePaths);
     if (failedMoves > 0) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::PartialExtraction,
             tr("Extraction completed, but %1 entr%2 could not be moved. "
                "Files already moved to the destination were not rolled back.")
@@ -896,19 +855,10 @@ void TarBackend::testArchive(const TestOptions &options)
     }
 
     QString target = m_archivePath;
-    std::unique_ptr<QTemporaryDir> outerDir;
     if (isCompressed()) {
-        outerDir = std::make_unique<QTemporaryDir>(
-            QDir::tempPath() + QStringLiteral("/qarchiver-tar-test-XXXXXX"));
-        if (!outerDir->isValid()) {
-            emit errorOccurred(ArchiveErrorCode::PermissionDenied,
-                               tr("Cannot create a temporary directory"));
-            return;
-        }
-
         QString errorText;
-        const InnerTarResult innerResult = extractInnerTar(
-            sevenZip, outerDir->path(), target, errorText);
+        const InnerTarResult innerResult =
+            resolveInnerTar(sevenZip, target, errorText);
         if (innerResult == InnerTarResult::Cancelled) {
             emit errorOccurred(ArchiveErrorCode::Cancelled, tr("Operation cancelled"));
             return;
@@ -953,6 +903,10 @@ void TarBackend::closeArchive()
     m_archivePath.clear();
     m_entries.clear();
     m_nameEncoding = QStringLiteral("UTF-8");
+    m_innerTarPath.clear();
+    m_innerTarDir.reset();
+    m_innerTarSize = -1;
+    m_innerTarMtime = 0;
 }
 
 bool TarBackend::supportsAppend() const

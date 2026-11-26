@@ -110,6 +110,21 @@ QString PreviewManager::ownPreviewDir() const
         QString::number(QCoreApplication::applicationPid()));
 }
 
+QString PreviewManager::archivePreviewDir(const QString &archivePath) const
+{
+    // Include size and modification time in the cache identity: an archive
+    // that was rewritten must not reuse files extracted from the old content.
+    // 缓存标识包含大小与修改时间：被重写的压缩包不会复用旧内容解压出的文件。
+    const QFileInfo archiveInfo(archivePath);
+    const QString archiveIdentity =
+        archivePath + QLatin1Char('|') + QString::number(archiveInfo.size())
+        + QLatin1Char('|')
+        + QString::number(archiveInfo.lastModified().toMSecsSinceEpoch());
+    const QString archiveHash = QCryptographicHash::hash(
+        archiveIdentity.toUtf8(), QCryptographicHash::Md5).toHex();
+    return QDir(ownPreviewDir()).filePath(archiveHash);
+}
+
 void PreviewManager::preview(const QString &archivePath, ArchiveFormat format,
                              const QString &entryPath, qint64 entrySize,
                              const QStringList &imagePaths,
@@ -126,17 +141,7 @@ void PreviewManager::preview(const QString &archivePath, ArchiveFormat format,
         return;
     }
 
-    // Include size and modification time in the cache identity: an archive
-    // that was rewritten must not reuse files extracted from the old content.
-    // 缓存标识包含大小与修改时间：被重写的压缩包不会复用旧内容解压出的文件。
-    const QFileInfo archiveInfo(archivePath);
-    const QString archiveIdentity =
-        archivePath + QLatin1Char('|') + QString::number(archiveInfo.size())
-        + QLatin1Char('|')
-        + QString::number(archiveInfo.lastModified().toMSecsSinceEpoch());
-    const QString archiveHash = QCryptographicHash::hash(
-        archiveIdentity.toUtf8(), QCryptographicHash::Md5).toHex();
-    const QString previewDir = QDir(ownPreviewDir()).filePath(archiveHash);
+    const QString previewDir = archivePreviewDir(archivePath);
     const QString normalized = FileUtils::normalizeEntryPath(entryPath);
 
     if (FileUtils::isPathTraversal(normalized, previewDir)) {
@@ -456,6 +461,28 @@ void PreviewManager::trackExternalEdit(const QString &previewDir,
     ExternalEditManager::instance().track(
         targetPath, previewDir, entryPath, archivePath, format, password,
         manager.nameEncoding());
+}
+
+void PreviewManager::clearArchiveCache(const QString &archivePath)
+{
+    if (archivePath.isEmpty()) {
+        return;
+    }
+    const QString previewDir = archivePreviewDir(archivePath);
+    if (m_jobs.contains(previewDir)) {
+        cancelPreview(previewDir);
+    }
+    m_pendingTargets.remove(previewDir);
+    if (!QDir(previewDir).removeRecursively() && QFileInfo::exists(previewDir)) {
+        // Windows keeps previewed images open in the system viewer.  Leaving
+        // the directory in place is intentional: cleanupStale() retries on the
+        // next start instead of failing the close path.
+        // Windows 上系统图片查看器会占用预览文件。这里保留目录，由下次启动的
+        // cleanupStale() 重试，而不是让关闭流程失败。
+        LOG_DEBUG("PreviewManager",
+                  "Could not remove preview cache %s; it will be retried on next start",
+                  previewDir.toUtf8().constData());
+    }
 }
 
 void PreviewManager::cleanupStale()

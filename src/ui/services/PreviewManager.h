@@ -44,12 +44,19 @@ public:
     // 清理本进程的预览目录（退出时调用）
     void cleanupOwn();
 
+    // Remove the cached previews of one archive (archive closed/replaced) and
+    // cancel a running extraction batch for it.
+    // 删除某个压缩包的预览缓存（关闭/替换压缩包时），并取消其正在进行的
+    // 解压批次。
+    void clearArchiveCache(const QString &archivePath);
+
 private:
     PreviewManager();
     Q_DISABLE_COPY(PreviewManager)
 
     QString previewRoot() const;
     QString ownPreviewDir() const;
+    QString archivePreviewDir(const QString &archivePath) const;
     void finishPreview(const QString &previewDir, const QString &destPath,
                        bool success, bool cancelled,
                        const QString &errorMessage);

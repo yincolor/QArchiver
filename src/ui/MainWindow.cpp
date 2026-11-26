@@ -8,6 +8,7 @@
 #include "common/FormatRegistry.h"
 
 #include "ui/MainWindow.h"
+#include "ui/MainWindow_p.h"
 
 #include "ui/MainWindowHelpers.h"
 #include "ui/icons/IconUtils.h"
@@ -52,53 +53,9 @@
 
 #include "backends/ArchiveBackend.h"
 
-#include <QAbstractItemView>
-#include <QAction>
-#include <QApplication>
-#include <QCheckBox>
-#include <QCloseEvent>
-#include <QCoreApplication>
-#include <QDesktopServices>
-#include <QDialog>
-#include <QDir>
-#include <QDockWidget>
-#include <QDrag>
-#include <QDragEnterEvent>
-#include <QDropEvent>
-#include <QElapsedTimer>
-#include <QFileDialog>
-#include <QFileInfo>
-#include <QFrame>
-#include <QFutureWatcher>
-#include <QGuiApplication>
-#include <QHBoxLayout>
-#include <QHeaderView>
-#include <QIcon>
-#include <QItemSelectionModel>
-#include <QKeyEvent>
-#include <QLabel>
-#include <QLineEdit>
-#include <QLocale>
-#include <QMenu>
-#include <QMenuBar>
-#include <QMessageBox>
-#include <QMimeData>
-#include <QProgressBar>
 #include <QScreen>
-#include <QPushButton>
-#include <QSplitter>
-#include <QStackedWidget>
-#include <QStandardPaths>
 #include <QShowEvent>
-#include <QStatusBar>
-#include <QTimer>
-#include <QToolBar>
-#include <QTreeView>
-#include <QUrl>
-#include <QVBoxLayout>
-#include <QtConcurrent>
 
-#include <limits>
 
 MainWindow::MainWindow(QWidget *parent, bool startupContentPending)
     : QMainWindow(parent)
@@ -247,6 +204,7 @@ MainWindow::MainWindow(QWidget *parent, bool startupContentPending)
     });
 
     PreviewManager::instance().cleanupStale();
+    ThumbnailManager::instance().cleanupStale();
     DragOutManager::instance().cleanupStale();
     updateActionsState();
 
@@ -260,6 +218,7 @@ MainWindow::~MainWindow()
 {
     ArchiveManager::instance().setSymlinkDecisionCallback(nullptr);
     PreviewManager::instance().cleanupOwn();
+    ThumbnailManager::instance().cleanupOwn();
     DragOutManager::instance().cleanupOwn();
 }
 
@@ -548,7 +507,11 @@ void MainWindow::onArchiveOpened(const QString &filePath)
     m_listReady = false;
     m_localBrowse = false;
     m_localBrowseDir.clear();
-    ThumbnailManager::instance().clearFailures();
+    if (!m_previewArchivePath.isEmpty() && m_previewArchivePath != filePath) {
+        PreviewManager::instance().clearArchiveCache(m_previewArchivePath);
+    }
+    m_previewArchivePath = filePath;
+    ThumbnailManager::instance().clearArchiveCache();
     m_model->setArchiveContext(
         filePath, ArchiveManager::instance().currentFormat(), m_currentPassword);
 
@@ -616,7 +579,7 @@ void MainWindow::onFileListReady(const QList<ArchiveEntry> &entries)
     updateSelectionDetails();
     updateActionsState();
 
-    if (m_oneClickPending) {
+    if (m_oneClick.isPending()) {
         beginOneClickExtract();
     }
 
@@ -646,11 +609,11 @@ void MainWindow::onOutputReady(const QString &line)
     }
 }
 
-void MainWindow::onPasswordRequested()
+void MainWindow::onPasswordRequested(bool wrongPassword)
 {
     setBusyIndicatorVisible(false);
 
-    PasswordDialog dlg(this);
+    PasswordDialog dlg(this, wrongPassword);
     if (dlg.exec() != QDialog::Accepted) {
         ArchiveManager::instance().cancelPendingOperation();
         updateActionsState();
@@ -697,9 +660,7 @@ void MainWindow::onErrorOccurred(ArchiveErrorCode code, const QString &msg)
         m_progressDialog = nullptr;
     }
     m_currentOp = UiOp::None;
-    m_oneClickExtractActive = false;
-    m_oneClickCloseAfter = false;
-    m_oneClickPending = false;
+    m_oneClick.reset();
     m_compressCloseAfter = false;
     m_lastCompressTarget.clear();
     if (!ArchiveManager::instance().backend()) {
@@ -750,7 +711,6 @@ void MainWindow::onErrorOccurred(ArchiveErrorCode code, const QString &msg)
     case ArchiveErrorCode::VolumeMissing:       title = tr("Volume Missing"); break;
     case ArchiveErrorCode::FileNotFound:        title = tr("File Not Found"); break;
     case ArchiveErrorCode::PermissionDenied:    title = tr("Permission Denied"); break;
-    case ArchiveErrorCode::PathTooLong:         title = tr("Path Too Long"); break;
     case ArchiveErrorCode::EncodingError:       title = tr("Encoding Error"); break;
     case ArchiveErrorCode::PartialExtraction:   title = tr("Extraction Incomplete"); break;
     case ArchiveErrorCode::HardLinkUnsupported: title = tr("Hard Link Not Supported"); break;
@@ -798,8 +758,7 @@ void MainWindow::onOperationFinished(bool success, const QString &msg)
         // 失败的外部编辑写回仍然继续监视该文件，但会刷新基线，
         // 避免立刻重复询问用户。
         finishExternalSave(false);
-        m_oneClickExtractActive = false;
-        m_oneClickCloseAfter = false;
+        m_oneClick.reset();
         m_compressCloseAfter = false;
         statusBar()->showMessage(msg.isEmpty() ? tr("Operation failed") : msg, 5000);
         updateNavLocation();
@@ -860,10 +819,8 @@ void MainWindow::onOperationFinished(bool success, const QString &msg)
         m_lastCompressTarget.clear();
     }
 
-    if (finishedOp == UiOp::Extract && m_oneClickExtractActive) {
-        const bool closeAfter = m_oneClickCloseAfter;
-        m_oneClickExtractActive = false;
-        m_oneClickCloseAfter = false;
+    if (finishedOp == UiOp::Extract && m_oneClick.isActive()) {
+        const bool closeAfter = m_oneClick.takeFinished();
         statusBar()->showMessage(
             tr("Extracted to %1").arg(m_lastExtractDest), 8000);
 
@@ -1029,6 +986,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     }
     ArchiveManager::instance().closeArchive();
     PreviewManager::instance().cleanupOwn();
+    ThumbnailManager::instance().cleanupOwn();
     DragOutManager::instance().cleanupOwn();
     event->accept();
 }

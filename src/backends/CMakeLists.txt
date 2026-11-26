@@ -1,8 +1,9 @@
 # Backend layer: archive backends used by the application and the CLI fallback.
 # 后端层：应用与命令行回退共用的压缩包后端。
 add_library(qarchiver_backends STATIC
-    ArchiveBackend.cpp
     ArchiveBackend.h
+    ExtractionUtils.cpp
+    ExtractionUtils.h
 
     tar/TarBackend.cpp
     tar/TarBackend.h

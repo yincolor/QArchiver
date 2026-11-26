@@ -86,8 +86,13 @@ public:
                                    const QStringList &paths,
                                    const QString &password);
 
-    // Drop cached staging (archive closed / replaced).
-    // 丢弃缓存的暂存内容（压缩包关闭或更换时）。
+    // Forget the in-memory index for the closed/replaced archive.  The staged
+    // directories on disk are intentionally kept: a drag may already be in
+    // flight and the system target reads the files after the drop.  They are
+    // removed by cleanupStale()/cleanupOwn().
+    // 丢弃已关闭/被替换压缩包的内存索引。磁盘上的暂存目录有意保留：拖拽可能
+    // 仍在进行，系统目标会在放下后读取这些文件；它们由
+    // cleanupStale()/cleanupOwn() 清理。
     void clearCache();
 
     // Remove staging left behind by processes that no longer exist.

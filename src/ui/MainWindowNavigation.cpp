@@ -4,6 +4,7 @@
 // MainWindow 导航：目录历史、位置栏、选中详情、搜索与文件夹面板。
 
 #include "ui/MainWindow.h"
+#include "ui/MainWindow_p.h"
 
 #include "ui/MainWindowHelpers.h"
 #include "ui/icons/IconUtils.h"
@@ -45,52 +46,8 @@
 
 #include "backends/ArchiveBackend.h"
 
-#include <QAbstractItemView>
-#include <QAction>
-#include <QApplication>
-#include <QCheckBox>
-#include <QCloseEvent>
-#include <QCoreApplication>
-#include <QDesktopServices>
 #include <QProcess>
-#include <QDialog>
-#include <QDir>
-#include <QDockWidget>
-#include <QDrag>
-#include <QDragEnterEvent>
-#include <QDropEvent>
-#include <QElapsedTimer>
-#include <QFileDialog>
-#include <QFileInfo>
-#include <QFrame>
-#include <QFutureWatcher>
-#include <QGuiApplication>
-#include <QHBoxLayout>
-#include <QHeaderView>
-#include <QIcon>
-#include <QItemSelectionModel>
-#include <QKeyEvent>
-#include <QLabel>
-#include <QLineEdit>
-#include <QLocale>
-#include <QMenu>
-#include <QMenuBar>
-#include <QMessageBox>
-#include <QMimeData>
-#include <QProgressBar>
-#include <QPushButton>
-#include <QSplitter>
-#include <QStackedWidget>
-#include <QStandardPaths>
-#include <QStatusBar>
-#include <QTimer>
-#include <QToolBar>
-#include <QTreeView>
-#include <QUrl>
-#include <QVBoxLayout>
-#include <QtConcurrent>
 
-#include <limits>
 
 QString MainWindow::contentViewMode() const
 {

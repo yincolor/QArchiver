@@ -289,6 +289,19 @@ QString MimeTypeHelper::resolveFirstVolume(const QString &filePath)
 
 ArchiveFormat MimeTypeHelper::detect(const QString &filePath)
 {
+    // Split archives carry their format header only in the first volume
+    // (.001); .002/.003 have neither a magic signature nor a suffix QArchiver
+    // recognises.  Forward detection to the first volume so opening any volume
+    // works the same way as opening the first one.
+    // 分卷压缩包只有首卷（.001）带格式头；.002/.003 既没有魔数也没有可识别的
+    // 后缀。将检测转发到首卷，使打开任意一卷与打开首卷行为一致。
+    if (FormatRegistry::isSplitVolume(filePath)) {
+        const QString firstVolume = resolveFirstVolume(filePath);
+        if (!firstVolume.isEmpty() && firstVolume != filePath) {
+            return detect(firstVolume);
+        }
+    }
+
     const QFileInfo info(filePath);
     if (!info.exists() || !info.isReadable()) {
         LOG_WARN("MimeTypeHelper", "File not readable: %s", filePath.toUtf8().constData());

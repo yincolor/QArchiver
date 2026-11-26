@@ -4,6 +4,8 @@
 
 #include "backends/sevenzip/SevenZipBackend.h"
 
+#include "backends/ExtractionUtils.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -48,67 +50,6 @@ int sevenZipPercent(const QString &line)
     bool ok = false;
     const int value = trimmed.left(digits).toInt(&ok);
     return ok ? qBound(0, value, 100) : -1;
-}
-
-bool isUnderSkipped(const QString &path, const QSet<QString> &skipped)
-{
-    if (skipped.isEmpty()) {
-        return false;
-    }
-    const QString normalized = FileUtils::normalizeEntryPath(path);
-    if (skipped.contains(normalized)) {
-        return true;
-    }
-    for (const QString &prefix : skipped) {
-        if (normalized.startsWith(prefix + QLatin1Char('/'))) {
-            return true;
-        }
-    }
-    return false;
-}
-
-QStringList buildExtractionSelection(const QList<ArchiveEntry> &entries,
-                                     const ExtractOptions &options)
-{
-    QSet<QString> skipped;
-    for (const QString &path : options.skippedSymlinks) {
-        const QString normalized = FileUtils::normalizeEntryPath(path);
-        if (!normalized.isEmpty()) {
-            skipped.insert(normalized);
-        }
-    }
-
-    QStringList selected;
-    QSet<QString> seen;
-    auto add = [&](const QString &rawPath) {
-        const QString normalized = FileUtils::normalizeEntryPath(rawPath);
-        // The archive-root "." entry expands to the whole tree in 7-Zip and
-        // would defeat the member filter, including skipped symlinks.
-        // 归档根目录的 "." 条目会让 7-Zip 展开整棵树，从而绕过成员过滤
-        // （包括被跳过的符号链接），因此必须排除。
-        if (normalized.isEmpty() || normalized == QStringLiteral(".")
-            || isUnderSkipped(normalized, skipped)
-            || seen.contains(normalized)) {
-            return;
-        }
-        seen.insert(normalized);
-        selected << rawPath;
-    };
-
-    if (!options.selectedFiles.isEmpty()) {
-        for (const QString &path : options.selectedFiles) {
-            add(path);
-        }
-        return selected;
-    }
-
-    if (skipped.isEmpty()) {
-        return selected; // empty means "all entries"
-    }
-    for (const ArchiveEntry &entry : entries) {
-        add(entry.path);
-    }
-    return selected;
 }
 
 } // namespace
@@ -314,11 +255,11 @@ void SevenZipBackend::extract(const ExtractOptions &options)
     // 把前导 '-' 当作开关，把前导 '@' 当作嵌套列表文件。
     SevenZipUtils::ListFile membersFile(QStringLiteral("7z-members"));
     const QStringList selectedPaths =
-        buildExtractionSelection(m_entries, options);
+        ExtractionUtils::buildExtractionSelection(m_entries, options);
     if (!selectedPaths.isEmpty()) {
         if (!SevenZipUtils::appendListFileArgs(membersFile, selectedPaths,
                                                m_nameEncoding, args)) {
-            FileUtils::removeDirectoryRecursively(tempDir);
+            FileUtils::removeTemporaryDirectory(tempDir);
             emit errorOccurred(ArchiveErrorCode::Unknown,
                                tr("Could not prepare the selected files for extraction"));
             return;
@@ -326,7 +267,7 @@ void SevenZipBackend::extract(const ExtractOptions &options)
     } else if (!options.skippedSymlinks.isEmpty()) {
         // Every requested entry was an unsafe symlink the user chose to skip.
         // 所有请求的条目都是用户选择跳过的危险符号链接。
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit operationFinished(true, tr("No files were extracted"));
         return;
     }
@@ -373,17 +314,17 @@ void SevenZipBackend::extract(const ExtractOptions &options)
         outputOptions);
 
     if (result.cancelled) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::Cancelled, tr("Operation cancelled"));
         return;
     }
     if (!result.started) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::ToolNotFound, tr("Failed to start 7z"));
         return;
     }
     if (!result.success()) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         if (isMissingVolumeError(result)) {
             emit errorOccurred(ArchiveErrorCode::VolumeMissing,
                                tr("A required archive volume is missing"));
@@ -417,7 +358,7 @@ void SevenZipBackend::extract(const ExtractOptions &options)
 #endif
 
     if (!FileUtils::unsafeExtractedSymlinks(tempDir).isEmpty()) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::PathTraversalBlocked,
                            tr("Blocked unsafe symbolic link during extraction"));
         return;
@@ -426,7 +367,7 @@ void SevenZipBackend::extract(const ExtractOptions &options)
     const int failedMoves = FileUtils::moveExtractedContents(
         tempDir, options.destDir, options.overwrite, options.preservePaths);
     if (failedMoves > 0) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::PartialExtraction,
             tr("Extraction completed, but %1 entr%2 could not be moved. "
                "Files already moved to the destination were not rolled back.")

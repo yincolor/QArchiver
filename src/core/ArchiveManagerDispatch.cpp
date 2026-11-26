@@ -19,10 +19,6 @@
 #include "core/ArchiveBackendFactory.h"
 #include "core/RecentFilesManager.h"
 
-#ifdef QARCHIVER_HAS_LIBARCHIVE
-#include "backends/libarchive/LibArchiveBackend.h"
-#endif
-
 namespace {
 
 // Variant visitor helper for the pending-operation dispatch.
@@ -42,13 +38,13 @@ bool ArchiveManager::startOperation(ArchiveBackend *backend,
         emit errorOccurred(ArchiveErrorCode::Unknown, tr("No archive open"));
         return false;
     }
-    if (m_busy) {
+    if (m_operation.busy) {
         emit errorOccurred(ArchiveErrorCode::Unknown,
                            tr("Another operation is already in progress"));
         return false;
     }
 
-    m_busy = true;
+    m_operation.busy = true;
     backend->clearCancel();
 
     const bool invoked = QMetaObject::invokeMethod(
@@ -57,7 +53,7 @@ bool ArchiveManager::startOperation(ArchiveBackend *backend,
         Qt::QueuedConnection);
 
     if (!invoked) {
-        m_busy = false;
+        m_operation.busy = false;
         emit errorOccurred(ArchiveErrorCode::Unknown,
                            tr("Failed to dispatch the archive operation"));
     }
@@ -73,31 +69,25 @@ void ArchiveManager::connectBackend(ArchiveBackend *backend, quint64 generation)
                 if (!isCurrent()) {
                     return;
                 }
-                if (backend == m_openingBackend) {
+                // Cache the encoding here, in the GUI thread, instead of
+                // reading the backend member from the worker thread later.
+                // 在 GUI 线程缓存编码，避免之后从工作线程读取后端成员。
+                m_nameEncoding = backend->nameEncoding();
+                OpenController::Opened opened;
+                if (m_openController.accept(backend, &opened)) {
+                    m_openController.assertInvariants("archiveOpened/accepted");
                     // The new archive opened successfully; only now replace
                     // the previously open archive, so a failure leaves it
                     // untouched.
                     // 新压缩包成功打开后才替换旧压缩包；失败时旧包保持不变。
                     ArchiveBackend *old = m_backend;
-                    m_backend = backend;
-                    m_openingBackend = nullptr;
-                    m_archivePath = m_openingPath;
-                    m_format = m_openingFormat;
-                    m_openingPath.clear();
-                    m_openingFormat = ArchiveFormat::Unknown;
-                    m_opening = false;
-                    m_busy = false;
+                    m_backend = opened.backend;
+                    m_archivePath = opened.path;
+                    m_format = opened.format;
+                    m_operation.busy = false;
                     m_entries.clear();
-                    m_pending = std::monostate{};
-                    m_retryCount = 0;
-#ifdef QARCHIVER_HAS_LIBARCHIVE
-                    m_usingLibArchive =
-                        qobject_cast<LibArchiveBackend *>(backend) != nullptr;
-#else
-                    m_usingLibArchive = false;
-#endif
-                    m_fallbackDone = false;
-                    m_fallbackInProgress = false;
+                    m_operation.pending = std::monostate{};
+                    m_operation.passwordRetries = 0;
                     if (old && old != backend) {
                         destroyBackend(old);
                     }
@@ -110,16 +100,16 @@ void ArchiveManager::connectBackend(ArchiveBackend *backend, quint64 generation)
                     // 后端。现在派发该写操作；界面仍显示进度对话框，并在
                     // operationFinished 后重新列出内容。
                     if (!std::holds_alternative<std::monostate>(
-                            m_writeAfterReopen)) {
-                        auto write = std::move(m_writeAfterReopen);
-                        m_writeAfterReopen = std::monostate{};
-                        m_busy = true;
+                            m_operation.writeAfterReopen)) {
+                        auto write = std::move(m_operation.writeAfterReopen);
+                        m_operation.writeAfterReopen = std::monostate{};
+                        m_operation.busy = true;
                         backend->clearCancel();
                         const bool invoked = std::visit(
                             Overloaded{
                                 [this, backend](const AddFilesOptions &options) {
-                                    m_pending = options;
-                                    m_retryCount = 0;
+                                    m_operation.pending = options;
+                                    m_operation.passwordRetries = 0;
                                     return QMetaObject::invokeMethod(
                                         backend,
                                         [backend, options]() {
@@ -128,8 +118,8 @@ void ArchiveManager::connectBackend(ArchiveBackend *backend, quint64 generation)
                                         Qt::QueuedConnection);
                                 },
                                 [this, backend](const DeleteFilesOptions &options) {
-                                    m_pending = options;
-                                    m_retryCount = 0;
+                                    m_operation.pending = options;
+                                    m_operation.passwordRetries = 0;
                                     return QMetaObject::invokeMethod(
                                         backend,
                                         [backend, options]() {
@@ -141,7 +131,7 @@ void ArchiveManager::connectBackend(ArchiveBackend *backend, quint64 generation)
                             },
                             write);
                         if (!invoked) {
-                            m_busy = false;
+                            m_operation.busy = false;
                             clearPendingState();
                             emit errorOccurred(
                                 ArchiveErrorCode::Unknown,
@@ -155,11 +145,11 @@ void ArchiveManager::connectBackend(ArchiveBackend *backend, quint64 generation)
                     return;
                 }
 
-                m_opening = false;
-                if (m_fallbackInProgress) {
+                if (m_openController.fallbackInProgress()) {
                     // Re-opening on the CLI backend after a fallback: the UI
                     // already knows this archive, do not re-announce it.
-                    m_fallbackInProgress = false;
+                    m_openController.finishFallback();
+                    m_openController.assertInvariants("archiveOpened/fallback");
                     return;
                 }
                 RecentFilesManager::instance().add(filePath);
@@ -167,12 +157,13 @@ void ArchiveManager::connectBackend(ArchiveBackend *backend, quint64 generation)
             });
 
     connect(backend, &ArchiveBackend::fileListReady, this,
-            [this, isCurrent](const QList<ArchiveEntry> &entries) {
+            [this, backend, isCurrent](const QList<ArchiveEntry> &entries) {
                 if (isCurrent()) {
                     m_entries = entries;
-                    m_busy = false;
-                    m_pending = std::monostate{};
-                    m_retryCount = 0;
+                    m_nameEncoding = backend->nameEncoding();
+                    m_operation.busy = false;
+                    m_operation.pending = std::monostate{};
+                    m_operation.passwordRetries = 0;
                     emit fileListReady(entries);
                 }
             });
@@ -196,8 +187,8 @@ void ArchiveManager::connectBackend(ArchiveBackend *backend, quint64 generation)
                 if (!isCurrent()) {
                     return;
                 }
-                m_busy = false;
-                emit passwordRequested();
+                m_operation.busy = false;
+                emit passwordRequested(false);
             });
 
     connect(backend, &ArchiveBackend::operationFinished, this,
@@ -249,7 +240,7 @@ void ArchiveManager::connectTempBackend(ArchiveBackend *backend)
 void ArchiveManager::handleTerminal(ArchiveBackend *backend, bool success,
                                     const QString &msg)
 {
-    m_busy = false;
+    m_operation.busy = false;
 
     if (backend == m_tempBackend) {
         bool promoted = true;
@@ -268,30 +259,34 @@ void ArchiveManager::handleTerminal(ArchiveBackend *backend, bool success,
         return;
     }
 
-    if (m_preTestPending) {
-        m_preTestPending = false;
+    if (m_operation.preTestPending) {
+        m_operation.preTestPending = false;
         if (!success) {
             clearPendingState();
-            m_preTestExtractOptions = ExtractOptions{};
+            m_operation.preTestOptions = ExtractOptions{};
             emit operationFinished(false, msg);
             return;
         }
 
-        ExtractOptions options = m_preTestExtractOptions;
+        ExtractOptions options = m_operation.preTestOptions;
         options.testBeforeExtract = false;
+        // The pre-test proved the password correct: a fresh budget applies to
+        // the extraction that follows.
+        // 预测试已证明密码正确：随后的解压重新计算尝试次数。
+        m_operation.passwordRetries = 0;
         startExtractOperation(options);
         return;
     }
 
-    m_pending = std::monostate{};
-    m_retryCount = 0;
+    m_operation.pending = std::monostate{};
+    m_operation.passwordRetries = 0;
     emit operationFinished(success, msg);
 }
 
 bool ArchiveManager::tryLibArchiveFallback(ArchiveBackend *backend,
                                            ArchiveErrorCode code, const QString &msg)
 {
-    if (backend != m_backend || !m_usingLibArchive || m_fallbackDone) {
+    if (backend != m_backend || !m_openController.canFallback()) {
         return false;
     }
 
@@ -305,20 +300,21 @@ bool ArchiveManager::tryLibArchiveFallback(ArchiveBackend *backend,
     case ArchiveErrorCode::PermissionDenied:
     case ArchiveErrorCode::PartialExtraction:
     case ArchiveErrorCode::HardLinkUnsupported:
+    case ArchiveErrorCode::WrongPassword:
         return false;
     default:
         break;
     }
 
-    const bool retryable = std::holds_alternative<ListOptions>(m_pending)
-        || std::holds_alternative<ExtractOptions>(m_pending)
-        || std::holds_alternative<TestOptions>(m_pending);
+    const bool retryable = std::holds_alternative<ListOptions>(m_operation.pending)
+        || std::holds_alternative<ExtractOptions>(m_operation.pending)
+        || std::holds_alternative<TestOptions>(m_operation.pending);
     if (!retryable) {
         return false;
     }
 
-    m_fallbackDone = true;
-    m_usingLibArchive = false;
+    m_openController.beginFallback();
+    m_openController.assertInvariants("fallback/begin");
 
     LOG_INFO("ArchiveManager",
              "libarchive could not handle %s (%s); retrying with the CLI backend",
@@ -335,7 +331,9 @@ bool ArchiveManager::tryLibArchiveFallback(ArchiveBackend *backend,
 
     ArchiveBackend *cli = ArchiveBackendFactory::create(m_format);
     if (!cli) {
-        m_busy = false;
+        m_openController.finishFallback();
+        m_openController.assertInvariants("fallback/no-backend");
+        m_operation.busy = false;
         clearPendingState();
         emit errorOccurred(code, msg);
         return true;
@@ -343,18 +341,17 @@ bool ArchiveManager::tryLibArchiveFallback(ArchiveBackend *backend,
 
     cli->moveToThread(&m_workerThread);
     m_backend = cli;
-    m_fallbackInProgress = true;
-    m_busy = true;
+    m_operation.busy = true;
 
     const quint64 generation = m_generation;
     connectBackend(cli, generation);
 
     const QString path = m_archivePath;
-    const auto pending = m_pending;
+    const auto pending = m_operation.pending;
     // When the failing operation was the "test before extract" pre-test, that
     // pre-test must be replayed, not the extraction itself.
-    const bool preTest = m_preTestPending;
-    const QString preTestPassword = m_preTestExtractOptions.password;
+    const bool preTest = m_operation.preTestPending;
+    const QString preTestPassword = m_operation.preTestOptions.password;
 
     QMetaObject::invokeMethod(
         cli,
@@ -396,16 +393,13 @@ void ArchiveManager::handleError(ArchiveBackend *backend, ArchiveErrorCode code,
         return;
     }
 
-    m_busy = false;
+    m_operation.busy = false;
 
-    if (backend == m_openingBackend) {
-        m_openingBackend = nullptr;
-        m_opening = false;
-        m_openingPath.clear();
-        m_openingFormat = ArchiveFormat::Unknown;
+    if (ArchiveBackend *failed = m_openController.takeOpening(backend)) {
+        m_openController.assertInvariants("handleError/open-failed");
         clearWriteAfterReopen();
-        disconnect(backend, nullptr, this, nullptr);
-        destroyBackend(backend);
+        disconnect(failed, nullptr, this, nullptr);
+        destroyBackend(failed);
         emit errorOccurred(code, msg);
         return;
     }
@@ -418,15 +412,27 @@ void ArchiveManager::handleError(ArchiveBackend *backend, ArchiveErrorCode code,
         return;
     }
 
-    if (m_preTestPending) {
-        m_preTestPending = false;
-        m_preTestExtractOptions = ExtractOptions{};
+    // A wrong password is recoverable: keep the pending operation and ask
+    // again while attempts remain instead of dropping the request.
+    // 密码错误是可恢复的：只要还有尝试次数，就保留待处理操作并再次询问，
+    // 而不是直接丢弃请求。
+    if (code == ArchiveErrorCode::WrongPassword && !m_openController.isOpening()
+        && hasPendingOperation()
+        && m_operation.passwordRetries < kMaxPasswordRetries) {
+        emit passwordRequested(true);
+        return;
+    }
+
+    if (m_operation.preTestPending) {
+        m_operation.preTestPending = false;
+        m_operation.preTestOptions = ExtractOptions{};
         clearPendingState();
     }
 
-    if (!m_opening) {
+    if (!m_openController.isOpening()) {
         clearPendingState();
     }
 
+    m_openController.assertInvariants("handleError");
     emit errorOccurred(code, msg);
 }

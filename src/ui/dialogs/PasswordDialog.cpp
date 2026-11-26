@@ -16,15 +16,20 @@
 #include <QFormLayout>
 #include <QVBoxLayout>
 
-PasswordDialog::PasswordDialog(QWidget *parent)
+PasswordDialog::PasswordDialog(QWidget *parent, bool wrongPassword)
     : QDialog(parent)
 {
     setWindowTitle(tr("Enter Password"));
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
     setMinimumWidth(420);
 
-    auto *label = new QLabel(tr("This archive is encrypted. Please enter the password:"), this);
+    auto *label = new QLabel(
+        wrongPassword
+            ? tr("The password is incorrect. Please enter it again:")
+            : tr("This archive is encrypted. Please enter the password:"),
+        this);
     label->setWordWrap(true);
+    label->setObjectName(QStringLiteral("PasswordHint"));
 
     m_passwordEdit = new QLineEdit(this);
     m_passwordEdit->setEchoMode(QLineEdit::Password);

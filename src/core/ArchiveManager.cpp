@@ -30,6 +30,15 @@ ArchiveManager::ArchiveManager()
 
 ArchiveManager::~ArchiveManager()
 {
+    shutdown();
+}
+
+void ArchiveManager::shutdown()
+{
+    if (m_shutdown) {
+        return;
+    }
+    m_shutdown = true;
     ++m_generation;
 
     if (m_backend) {
@@ -40,23 +49,33 @@ ArchiveManager::~ArchiveManager()
         m_tempBackend->requestCancel();
         disconnect(m_tempBackend, nullptr, this, nullptr);
     }
-    if (m_openingBackend) {
-        m_openingBackend->requestCancel();
-        disconnect(m_openingBackend, nullptr, this, nullptr);
+    ArchiveBackend *opening = m_openController.takeOpening();
+    if (opening) {
+        opening->requestCancel();
+        disconnect(opening, nullptr, this, nullptr);
     }
 
     m_workerThread.quit();
-    if (!m_workerThread.wait(5000)) {
-        m_workerThread.terminate();
-        m_workerThread.wait(1000);
+    if (!m_workerThread.wait(15000)) {
+        // Never fall back to QThread::terminate(): it can kill the worker while
+        // it holds Qt locks or a child-process mutex and corrupt the process.
+        // Cancellation has already been requested (requestCancel() kills the
+        // helper process), so wait for it to unwind.
+        // 不要回退到 QThread::terminate()：它可能在 worker 持有 Qt 锁或子进程
+        // 互斥量时杀死线程并破坏进程。取消已经发出（requestCancel() 会结束
+        // 辅助进程），这里等待它自行退出。
+        LOG_ERROR("ArchiveManager",
+                  "Worker thread did not stop within 15s; waiting for it to "
+                  "finish instead of terminating it");
+        m_workerThread.wait();
     }
 
     delete m_backend;
     m_backend = nullptr;
     delete m_tempBackend;
     m_tempBackend = nullptr;
-    delete m_openingBackend;
-    m_openingBackend = nullptr;
+    delete opening;
+    m_openController.assertInvariants("shutdown");
 
     cleanupCompressSession();
 }
@@ -76,7 +95,12 @@ void ArchiveManager::setSymlinkDecisionCallback(SymlinkDecisionCallback callback
 
 void ArchiveManager::openArchive(const QString &filePath)
 {
-    if (m_busy) {
+    openArchive(filePath, false);
+}
+
+void ArchiveManager::openArchive(const QString &filePath, bool forceCli)
+{
+    if (m_operation.busy) {
         emit errorOccurred(ArchiveErrorCode::Unknown,
                            tr("Another operation is already in progress"));
         return;
@@ -97,13 +121,11 @@ void ArchiveManager::openArchive(const QString &filePath)
     ++m_generation;
     const quint64 generation = m_generation;
 
-    m_openingPath = filePath;
-    m_openingFormat = ArchiveFormat::Unknown;
-    m_opening = true;
-    m_busy = true;
-    m_pending = std::monostate{};
-    m_retryCount = 0;
-    m_preTestPending = false;
+    m_openController.begin(filePath, forceCli);
+    m_operation.busy = true;
+    m_operation.pending = std::monostate{};
+    m_operation.passwordRetries = 0;
+    m_operation.preTestPending = false;
 
     // A write-through reopen (add/delete on a read-only backend) does not
     // change what the user is looking at: the archive stays open and its list
@@ -115,7 +137,7 @@ void ArchiveManager::openArchive(const QString &filePath)
     // 状态，列表也仍然有效。此时通告“正在打开”会让界面停在一个半更新的打开
     // 状态——重放的写操作通过 operationFinished() 汇报，而这个重开刻意不发出
     // 对应的 archiveOpened()。
-    if (std::holds_alternative<std::monostate>(m_writeAfterReopen)) {
+    if (std::holds_alternative<std::monostate>(m_operation.writeAfterReopen)) {
         emit archiveOpening(filePath);
     }
 
@@ -133,7 +155,7 @@ void ArchiveManager::openArchive(const QString &filePath)
                 if (generation != m_generation) {
                     return;
                 }
-                m_busy = false;
+                m_operation.busy = false;
                 finishOpen(filePath, format);
             });
 
@@ -144,10 +166,9 @@ void ArchiveManager::openArchive(const QString &filePath)
 void ArchiveManager::finishOpen(const QString &filePath, ArchiveFormat format)
 {
     if (format == ArchiveFormat::Unknown) {
-        m_opening = false;
-        m_openingPath.clear();
-        m_openingFormat = ArchiveFormat::Unknown;
-        m_busy = false;
+        m_openController.abort();
+        m_openController.assertInvariants("finishOpen/unknown-format");
+        m_operation.busy = false;
         clearWriteAfterReopen();
         emit errorOccurred(ArchiveErrorCode::UnsupportedFormat,
                            tr("Unrecognized archive format or file is corrupted: %1")
@@ -155,15 +176,12 @@ void ArchiveManager::finishOpen(const QString &filePath, ArchiveFormat format)
         return;
     }
 
-    ArchiveBackend *backend = m_forceCliForOpen
-        ? ArchiveBackendFactory::create(format)
-        : ArchiveBackendFactory::createForRead(format, filePath);
-    m_forceCliForOpen = false;
+    QString errorMessage;
+    ArchiveBackend *backend =
+        m_openController.createOpeningBackend(format, &errorMessage);
     if (!backend) {
-        m_opening = false;
-        m_openingPath.clear();
-        m_openingFormat = ArchiveFormat::Unknown;
-        m_busy = false;
+        m_openController.assertInvariants("finishOpen/no-backend");
+        m_operation.busy = false;
         clearWriteAfterReopen();
         emit errorOccurred(ArchiveErrorCode::UnsupportedFormat,
                            tr("No backend available for format: %1")
@@ -172,10 +190,7 @@ void ArchiveManager::finishOpen(const QString &filePath, ArchiveFormat format)
     }
 
     backend->moveToThread(&m_workerThread);
-    m_openingBackend = backend;
-    m_openingFormat = format;
-    m_opening = true;
-    m_busy = true;
+    m_operation.busy = true;
     connectBackend(backend, m_generation);
 
     const bool invoked = QMetaObject::invokeMethod(
@@ -184,22 +199,28 @@ void ArchiveManager::finishOpen(const QString &filePath, ArchiveFormat format)
         Qt::QueuedConnection);
 
     if (!invoked) {
-        m_opening = false;
-        m_openingPath.clear();
-        m_openingFormat = ArchiveFormat::Unknown;
-        m_busy = false;
+        ArchiveBackend *failed = m_openController.takeOpening(backend);
+        m_openController.assertInvariants("finishOpen/dispatch-failed");
+        m_operation.busy = false;
         clearWriteAfterReopen();
-        ArchiveBackend *failed = m_openingBackend;
-        m_openingBackend = nullptr;
-        destroyBackend(failed);
+        if (failed) {
+            destroyBackend(failed);
+        }
         emit errorOccurred(ArchiveErrorCode::Unknown,
                            tr("Failed to open archive: %1").arg(filePath));
+        return;
     }
+
+    m_openController.assertInvariants("finishOpen");
 }
 
 QString ArchiveManager::nameEncoding() const
 {
-    return m_backend ? m_backend->nameEncoding() : QString();
+    // Cached in the GUI thread by the archiveOpened/fileListReady handlers;
+    // never read the backend member directly (the worker thread writes it).
+    // 由 archiveOpened/fileListReady 处理函数在 GUI 线程缓存；不直接读取后端
+    // 成员（它由工作线程写入）。
+    return m_nameEncoding;
 }
 
 void ArchiveManager::listContents(const ListOptions &options)
@@ -209,8 +230,8 @@ void ArchiveManager::listContents(const ListOptions &options)
         return;
     }
 
-    m_pending = options;
-    m_retryCount = 0;
+    m_operation.pending = options;
+    m_operation.passwordRetries = 0;
 
     // No encoding hint here on purpose: every backend re-detects the encoding
     // from the archive itself, which is deterministic, while reusing a value
@@ -246,6 +267,12 @@ void ArchiveManager::extract(const ExtractOptions &options)
         return;
     }
 
+    // A user-initiated extraction starts a fresh password budget.  Retries go
+    // through startExtractOperation() directly and must keep the counter.
+    // 用户发起的解压重新开始计算密码尝试次数；重试直接走
+    // startExtractOperation()，必须保留计数器。
+    m_operation.passwordRetries = 0;
+
     ExtractOptions effective = options;
     // Decode member names exactly like the listing did, and let the CLI
     // backends build their listfile in the archive's own code page.
@@ -269,17 +296,16 @@ void ArchiveManager::extract(const ExtractOptions &options)
     }
 
     if (effective.testBeforeExtract) {
-        m_preTestPending = true;
-        m_preTestExtractOptions = effective;
-        m_pending = effective;
-        m_retryCount = 0;
+        m_operation.preTestPending = true;
+        m_operation.preTestOptions = effective;
+        m_operation.pending = effective;
 
         TestOptions testOptions;
         testOptions.password = effective.password;
         if (!startOperation(m_backend, [testOptions](ArchiveBackend *backend) {
                 backend->testArchive(testOptions);
             })) {
-            m_preTestPending = false;
+            m_operation.preTestPending = false;
             clearPendingState();
         }
         return;
@@ -290,8 +316,7 @@ void ArchiveManager::extract(const ExtractOptions &options)
 
 void ArchiveManager::startExtractOperation(const ExtractOptions &options)
 {
-    m_pending = options;
-    m_retryCount = 0;
+    m_operation.pending = options;
 
     if (!startOperation(m_backend, [options](ArchiveBackend *backend) {
             backend->extract(options);
@@ -302,7 +327,7 @@ void ArchiveManager::startExtractOperation(const ExtractOptions &options)
 
 void ArchiveManager::compress(const CompressOptions &options, ArchiveFormat format)
 {
-    if (m_busy) {
+    if (m_operation.busy) {
         emit errorOccurred(ArchiveErrorCode::Unknown,
                            tr("Another operation is already in progress"));
         return;
@@ -361,7 +386,7 @@ void ArchiveManager::compress(const CompressOptions &options, ArchiveFormat form
             QDir(m_compressTempDir->path()).filePath(finalInfo.fileName());
     }
 
-    m_busy = true;
+    m_operation.busy = true;
     backend->clearCancel();
 
     const bool invoked = QMetaObject::invokeMethod(
@@ -370,7 +395,7 @@ void ArchiveManager::compress(const CompressOptions &options, ArchiveFormat form
         Qt::QueuedConnection);
 
     if (!invoked) {
-        m_busy = false;
+        m_operation.busy = false;
         emit errorOccurred(ArchiveErrorCode::Unknown,
                            tr("Failed to dispatch the compression operation"));
         cleanupTempBackend();
@@ -389,9 +414,8 @@ void ArchiveManager::addFiles(const AddFilesOptions &options)
             LOG_INFO("ArchiveManager",
                      "Add files requested on a read-only backend; reopening %s with the CLI backend",
                      m_archivePath.toUtf8().constData());
-            m_writeAfterReopen = options;
-            m_forceCliForOpen = true;
-            openArchive(m_archivePath);
+            m_operation.writeAfterReopen = options;
+            openArchive(m_archivePath, true);
             return;
         }
         emit errorOccurred(ArchiveErrorCode::OperationNotSupported,
@@ -399,8 +423,8 @@ void ArchiveManager::addFiles(const AddFilesOptions &options)
         return;
     }
 
-    m_pending = options;
-    m_retryCount = 0;
+    m_operation.pending = options;
+    m_operation.passwordRetries = 0;
 
     if (!startOperation(m_backend, [options](ArchiveBackend *backend) {
             backend->addFiles(options);
@@ -420,9 +444,8 @@ void ArchiveManager::deleteFiles(const DeleteFilesOptions &options)
             LOG_INFO("ArchiveManager",
                      "Delete files requested on a read-only backend; reopening %s with the CLI backend",
                      m_archivePath.toUtf8().constData());
-            m_writeAfterReopen = options;
-            m_forceCliForOpen = true;
-            openArchive(m_archivePath);
+            m_operation.writeAfterReopen = options;
+            openArchive(m_archivePath, true);
             return;
         }
         emit errorOccurred(ArchiveErrorCode::OperationNotSupported,
@@ -430,8 +453,8 @@ void ArchiveManager::deleteFiles(const DeleteFilesOptions &options)
         return;
     }
 
-    m_pending = options;
-    m_retryCount = 0;
+    m_operation.pending = options;
+    m_operation.passwordRetries = 0;
 
     if (!startOperation(m_backend, [options](ArchiveBackend *backend) {
             backend->deleteFiles(options);
@@ -447,8 +470,8 @@ void ArchiveManager::testArchive(const TestOptions &options)
         return;
     }
 
-    m_pending = options;
-    m_retryCount = 0;
+    m_operation.pending = options;
+    m_operation.passwordRetries = 0;
 
     if (!startOperation(m_backend, [options](ArchiveBackend *backend) {
             backend->testArchive(options);
@@ -463,18 +486,18 @@ void ArchiveManager::retryWithPassword(const QString &password)
         return;
     }
 
-    if (m_retryCount >= 3) {
+    if (m_operation.passwordRetries >= kMaxPasswordRetries) {
         clearPendingState();
-        m_preTestPending = false;
-        m_preTestExtractOptions = ExtractOptions{};
+        m_operation.preTestPending = false;
+        m_operation.preTestOptions = ExtractOptions{};
         emit errorOccurred(ArchiveErrorCode::WrongPassword,
                            tr("Too many failed password attempts."));
         return;
     }
 
-    ++m_retryCount;
+    ++m_operation.passwordRetries;
 
-    if (auto *options = std::get_if<ListOptions>(&m_pending)) {
+    if (auto *options = std::get_if<ListOptions>(&m_operation.pending)) {
         options->password = password;
         const ListOptions opts = *options;
         if (!startOperation(m_backend, [opts](ArchiveBackend *backend) {
@@ -484,12 +507,31 @@ void ArchiveManager::retryWithPassword(const QString &password)
         }
         return;
     }
-    if (auto *options = std::get_if<ExtractOptions>(&m_pending)) {
+    if (auto *options = std::get_if<ExtractOptions>(&m_operation.pending)) {
         options->password = password;
-        extract(*options);
+        // Copy before startExtractOperation() reassigns m_operation.pending, which
+        // would invalidate @p options.
+        // 在 startExtractOperation() 重新赋值 m_operation.pending 前先拷贝，否则
+        // @p options 会失效。
+        const ExtractOptions opts = *options;
+        if (m_operation.preTestPending) {
+            // The pre-extraction test is what failed; replay it with the new
+            // password instead of skipping straight to extraction.
+            // 失败的是解压前测试；用新密码重放测试，而不是直接解压。
+            m_operation.preTestOptions = opts;
+            TestOptions testOptions;
+            testOptions.password = password;
+            if (!startOperation(m_backend, [testOptions](ArchiveBackend *backend) {
+                    backend->testArchive(testOptions);
+                })) {
+                clearPendingState();
+            }
+            return;
+        }
+        startExtractOperation(opts);
         return;
     }
-    if (auto *options = std::get_if<TestOptions>(&m_pending)) {
+    if (auto *options = std::get_if<TestOptions>(&m_operation.pending)) {
         options->password = password;
         const TestOptions opts = *options;
         if (!startOperation(m_backend, [opts](ArchiveBackend *backend) {
@@ -499,7 +541,7 @@ void ArchiveManager::retryWithPassword(const QString &password)
         }
         return;
     }
-    if (auto *options = std::get_if<AddFilesOptions>(&m_pending)) {
+    if (auto *options = std::get_if<AddFilesOptions>(&m_operation.pending)) {
         options->password = password;
         const AddFilesOptions opts = *options;
         if (!startOperation(m_backend, [opts](ArchiveBackend *backend) {
@@ -509,7 +551,7 @@ void ArchiveManager::retryWithPassword(const QString &password)
         }
         return;
     }
-    if (auto *options = std::get_if<DeleteFilesOptions>(&m_pending)) {
+    if (auto *options = std::get_if<DeleteFilesOptions>(&m_operation.pending)) {
         options->password = password;
         const DeleteFilesOptions opts = *options;
         if (!startOperation(m_backend, [opts](ArchiveBackend *backend) {
@@ -526,8 +568,11 @@ void ArchiveManager::cancelCurrentOperation()
     if (m_backend) {
         m_backend->requestCancel();
     }
-    if (m_openingBackend) {
-        m_openingBackend->requestCancel();
+    if (m_openController.isOpening()) {
+        ArchiveBackend *opening = m_openController.takeOpening();
+        if (opening) {
+            opening->requestCancel();
+        }
     }
     if (m_tempBackend) {
         m_tempBackend->requestCancel();
@@ -537,9 +582,9 @@ void ArchiveManager::cancelCurrentOperation()
 void ArchiveManager::cancelPendingOperation()
 {
     clearPendingState();
-    m_preTestPending = false;
-    m_preTestExtractOptions = ExtractOptions{};
-    m_busy = false;
+    m_operation.preTestPending = false;
+    m_operation.preTestOptions = ExtractOptions{};
+    m_operation.busy = false;
     emit operationFinished(false, tr("Cancelled"));
 }
 
@@ -551,7 +596,7 @@ bool ArchiveManager::canModifyCurrentArchive() const
 
 bool ArchiveManager::canReopenForWrite() const
 {
-    if (m_usingLibArchive == false || m_archivePath.isEmpty()) {
+    if (m_openController.usingLibArchive() == false || m_archivePath.isEmpty()) {
         return false;
     }
     if (MimeTypeHelper::isSplitVolume(m_archivePath)) {
@@ -564,30 +609,24 @@ bool ArchiveManager::canReopenForWrite() const
 
 void ArchiveManager::clearWriteAfterReopen()
 {
-    m_writeAfterReopen = std::monostate{};
-    m_forceCliForOpen = false;
+    m_operation.writeAfterReopen = std::monostate{};
 }
 
 
 void ArchiveManager::closeArchive()
 {
     ++m_generation;
-    m_busy = false;
-    m_opening = false;
+    m_operation.busy = false;
+    m_nameEncoding.clear();
     clearPendingState();
-    m_preTestPending = false;
-    m_preTestExtractOptions = ExtractOptions{};
+    m_operation.preTestPending = false;
+    m_operation.preTestOptions = ExtractOptions{};
     m_archivePath.clear();
-    m_openingPath.clear();
     m_format = ArchiveFormat::Unknown;
-    m_openingFormat = ArchiveFormat::Unknown;
-    m_usingLibArchive = false;
-    m_fallbackDone = false;
-    m_fallbackInProgress = false;
     clearWriteAfterReopen();
 
-    ArchiveBackend *opening = m_openingBackend;
-    m_openingBackend = nullptr;
+    ArchiveBackend *opening = m_openController.reset();
+    m_openController.assertInvariants("closeArchive");
     destroyBackend(opening);
 
     ArchiveBackend *current = m_backend;
@@ -647,8 +686,8 @@ void ArchiveManager::destroyBackend(ArchiveBackend *backend)
 
 void ArchiveManager::clearPendingState()
 {
-    m_pending = std::monostate{};
-    m_retryCount = 0;
+    m_operation.pending = std::monostate{};
+    m_operation.passwordRetries = 0;
 }
 
 void ArchiveManager::cleanupTempBackend()

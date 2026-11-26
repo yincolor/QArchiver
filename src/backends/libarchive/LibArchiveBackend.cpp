@@ -479,7 +479,7 @@ void LibArchiveBackend::extract(const ExtractOptions &options)
     QString error;
     ReaderPtr reader = openReader(m_archivePath, m_format, options.password, &error);
     if (!reader) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         reportFailure(error, options.password, tr("Cannot open archive"));
         return;
     }
@@ -573,7 +573,7 @@ void LibArchiveBackend::extract(const ExtractOptions &options)
                 continue;
             }
             if (!FileUtils::isSafeSymlinkTarget(relative, target)) {
-                FileUtils::removeDirectoryRecursively(tempDir);
+                FileUtils::removeTemporaryDirectory(tempDir);
                 emit errorOccurred(ArchiveErrorCode::PathTraversalBlocked,
                                    tr("Blocked unsafe symbolic link: %1").arg(relative));
                 return;
@@ -584,7 +584,7 @@ void LibArchiveBackend::extract(const ExtractOptions &options)
             const bool linkCreated = QFile::link(target, outPath);
 #endif
             if (!linkCreated) {
-                FileUtils::removeDirectoryRecursively(tempDir);
+                FileUtils::removeTemporaryDirectory(tempDir);
                 emit errorOccurred(ArchiveErrorCode::PermissionDenied,
                                    tr("Cannot create symbolic link: %1").arg(outPath));
                 return;
@@ -598,7 +598,7 @@ void LibArchiveBackend::extract(const ExtractOptions &options)
             if (target.isEmpty()
                 || FileUtils::isPathTraversal(target, tempDir)
                 || FileUtils::isPathTraversal(relative, tempDir)) {
-                FileUtils::removeDirectoryRecursively(tempDir);
+                FileUtils::removeTemporaryDirectory(tempDir);
                 emit errorOccurred(ArchiveErrorCode::HardLinkUnsupported,
                                    tr("Blocked unsafe hard link: %1").arg(relative));
                 return;
@@ -609,7 +609,7 @@ void LibArchiveBackend::extract(const ExtractOptions &options)
             if (targetInfo.exists() && !targetInfo.isSymLink()
                 && targetInfo.isFile()) {
                 if (!createHardLink(targetPath, outPath)) {
-                    FileUtils::removeDirectoryRecursively(tempDir);
+                    FileUtils::removeTemporaryDirectory(tempDir);
                     emit errorOccurred(
                         ArchiveErrorCode::HardLinkUnsupported,
                         tr("Cannot create hard link %1 -> %2")
@@ -712,7 +712,7 @@ void LibArchiveBackend::extract(const ExtractOptions &options)
                 }
                 const QString linkPath = QDir(tempDir).filePath(relative);
                 if (!createHardLink(targetPath, linkPath)) {
-                    FileUtils::removeDirectoryRecursively(tempDir);
+                    FileUtils::removeTemporaryDirectory(tempDir);
                     emit errorOccurred(
                         ArchiveErrorCode::HardLinkUnsupported,
                         tr("Cannot create hard link %1 -> %2")
@@ -722,7 +722,7 @@ void LibArchiveBackend::extract(const ExtractOptions &options)
                 progress = true;
             }
             if (!progress) {
-                FileUtils::removeDirectoryRecursively(tempDir);
+                FileUtils::removeTemporaryDirectory(tempDir);
                 emit errorOccurred(
                     ArchiveErrorCode::HardLinkUnsupported,
                     tr("Hard link target is missing or unsafe: %1")
@@ -734,24 +734,24 @@ void LibArchiveBackend::extract(const ExtractOptions &options)
     }
 
     if (cancelled) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::Cancelled, tr("Operation cancelled"));
         return;
     }
     if (failure.isEmpty() && result != ARCHIVE_EOF) {
         const QString message = libarchiveError(reader.get());
         reader.reset();
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         reportFailure(message, options.password, tr("Extraction failed"));
         return;
     }
     if (!failure.isEmpty()) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         return;
     }
 
     if (!FileUtils::unsafeExtractedSymlinks(tempDir).isEmpty()) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::PathTraversalBlocked,
                            tr("Blocked unsafe symbolic link during extraction"));
         return;
@@ -760,7 +760,7 @@ void LibArchiveBackend::extract(const ExtractOptions &options)
     const int failedMoves = FileUtils::moveExtractedContents(
         tempDir, options.destDir, options.overwrite, options.preservePaths);
     if (failedMoves > 0) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::PartialExtraction,
                            tr("Failed to move %1 extracted entries to %2. "
                               "Files already moved were not rolled back.")

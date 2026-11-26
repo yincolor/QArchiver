@@ -8,7 +8,7 @@ hicolor 图标、文档与内置 7-Zip。本文件列出打包者需要声明的
 
 | 依赖 | Debian/Ubuntu 包 | 最低版本 |
 | --- | --- | --- |
-| Qt 6 基础库与工具 | `qt6-base-dev`, `qt6-tools-dev` | 6.4 |
+| Qt 6 基础库、SVG 与工具 | `qt6-base-dev`, `qt6-svg-dev`, `qt6-tools-dev` | 6.4 |
 | 构建工具 | `cmake`（>= 3.20）, `g++`（>= 12）或 `clang`（>= 15） | — |
 | libarchive 开发头文件（可选） | `libarchive-dev`（>= 3.4） | 3.4 |
 
@@ -17,7 +17,8 @@ hicolor 图标、文档与内置 7-Zip。本文件列出打包者需要声明的
 ```text
 Build-Depends: debhelper-compat (= 13), cmake (>= 3.20),
                g++ (>= 12) | clang (>= 15),
-               qt6-base-dev (>= 6.4), qt6-tools-dev (>= 6.4),
+               qt6-base-dev (>= 6.4), qt6-svg-dev (>= 6.4),
+               qt6-tools-dev (>= 6.4),
                libarchive-dev (>= 3.4), pkg-config
 ```
 
@@ -42,6 +43,7 @@ dpkg-buildpackage -us -uc -b
 | 能力 | 依赖 | Debian/Ubuntu 包 | 备注 |
 | --- | --- | --- | --- |
 | 启动 | Qt 6 运行库 | `libqt6core6`, `libqt6gui6`, `libqt6widgets6`, `libqt6concurrent6` | 由 dh_shlibdeps 自动生成，通常不用手写 |
+| SVG 缩略图 | Qt SVG 运行库 | `libqt6svg6` | 构建时链接 Qt6::Svg；由 dh_shlibdeps 自动生成 |
 | 读取 zip / 明文 7z / tar 系 / gz|bz2|xz | libarchive（可选） | `libarchive13` / `libarchive13t64` | 构建时链接，启用时运行期必须声明 |
 | 7z / zip / tar 系读写、纯流、RAR 只读 | 内置 7-Zip | 无（随包安装） | 安装到 `/usr/libexec/qarchiver/7zip/7zzs`，不要额外声明 `7zip` / `tar` / `unrar` 依赖 |
 | 标准对话框按钮、文件对话框中文文本（可选） | Qt 基础翻译 | `qt6-translations-l10n` | 缺失时应用自身文本仍为中文，仅 Qt 自带控件文本保持英文 |
@@ -50,6 +52,9 @@ dpkg-buildpackage -us -uc -b
 
 - 若以 `-DQARCHIVER_USE_LIBARCHIVE=OFF` 构建，则不应声明 libarchive 依赖；
   7-Zip 辅助程序仍由 `cmake --install` 自动安装，无需改为系统依赖。
+- SVG 缩略图由链接的 `Qt6::Svg`（`libqt6svg6`）通过 `QSvgRenderer` 渲染，
+  不再依赖 `imageformats/qsvg.so`；`qt6-image-formats-plugins` 仍建议安装，
+  用于 WebP/TIFF 等其他图片格式。
 - 打 AppImage / Flatpak 时请确认 `libexec/qarchiver/7zip/7zzs` 被包含进包；
   tar 与 RAR 读取都由该内置程序完成，不需要宿主机安装 `tar` / `unrar`。
 
@@ -99,7 +104,9 @@ desktop 文件设置 `StartupWMClass=QArchiver`，并使用合法的
 Windows 使用 `cmake --install` + `qt_generate_deploy_app_script()` 部署 Qt，
 `cpack` 生成 `QArchiver-<version>-windows-<arch>.zip`，再由
 `packaging/windows/build-installer.ps1` 调用 Inno Setup（`QArchiver.iss`）
-生成 `QArchiver-<version>-windows-<arch>-setup.exe` 安装器。安装器提供开始
+生成 `QArchiver-<version>-windows-<arch>-setup.exe` 安装器。链接 `Qt6::Svg` 后
+`windeployqt` 会自动部署 `Qt6Svg.dll`；SVG 缩略图使用 `QSvgRenderer`，不要求
+`imageformats\qsvg.dll`。安装器提供开始
 菜单、可选桌面快捷方式、卸载入口，并询问是否注册资源管理器右键菜单
 （`QArchiverShell.dll`，动态“添加到 xx.zip”文案）与关联压缩包格式
 （默认选中）。便携包则通过 `packaging/windows/install-shell-menu.ps1`

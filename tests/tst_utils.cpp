@@ -11,6 +11,12 @@
 
 #include <limits>
 
+#ifndef Q_OS_WIN
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 #include "backends/sevenzip/SevenZipListParser.h"
 #include "common/FormatRegistry.h"
 #include "utils/EncodingDetector.h"
@@ -25,13 +31,16 @@ private slots:
     void normalizeEntryPath_data();
     void normalizeEntryPath();
     void traversalDetection();
+    void destinationSymlinkEscape();
     void sevenZipListParser();
     void checkedSizeAccumulation();
     void safeSymlinkTargets_data();
     void safeSymlinkTargets();
     void unsafeExtractedSymlinks();
+    void rawTemporaryDirectoryCleanup();
     void parserPreservesSpacesAndLinks();
     void formatRegistrySuffixes();
+    void formatRegistryFiltersAreConsistent();
     void legacyEncodingDetection();
     void logLineBufferSplitsLines();
     void archiveStripExtension();
@@ -77,6 +86,47 @@ void TestUtils::traversalDetection()
                                         QStringLiteral("/tmp/dest")));
     QVERIFY(!FileUtils::isPathTraversal(QStringLiteral("safe/file.txt"),
                                         QStringLiteral("/tmp/dest")));
+}
+
+// A pre-existing symlink inside the destination must not become a write-through
+// channel to a directory outside it (the temporary tree is prepared before the
+// targets exist, so the old "only check existing targets" test missed this).
+// 目标目录中预先存在的符号链接不能成为写到目录外的通道（临时目录在目标存在
+// 之前就已准备好，旧的“只检查已存在目标”逻辑漏掉了这种情况）。
+void TestUtils::destinationSymlinkEscape()
+{
+#ifdef Q_OS_WIN
+    QSKIP("QFile::link creates .lnk shortcuts on Windows, not Unix symlinks");
+#endif
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString dest = temp.filePath(QStringLiteral("dest"));
+    const QString outside = temp.filePath(QStringLiteral("outside"));
+    const QString staging = QDir(dest).filePath(QStringLiteral(".tmp_extract_test"));
+    QVERIFY(QDir().mkpath(QDir(staging).filePath(QStringLiteral("link"))));
+    QVERIFY(QDir().mkpath(outside));
+    QVERIFY(QFile::link(outside, QDir(dest).filePath(QStringLiteral("link"))));
+
+    const QString escaped = QDir(outside).filePath(QStringLiteral("file.txt"));
+    QVERIFY(FileUtils::isPathTraversal(QStringLiteral("link/file.txt"), dest));
+
+    {
+        QFile file(QDir(staging).filePath(QStringLiteral("link/file.txt")));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("escaped"), qint64(7));
+    }
+    {
+        QFile file(QDir(staging).filePath(QStringLiteral("safe.txt")));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("safe"), qint64(4));
+    }
+
+    const int failed = FileUtils::moveExtractedContents(
+        staging, dest, OverwritePolicy::Always, true);
+    QVERIFY(failed > 0); // the escaping entries are refused / 逃逸的条目被拒绝
+    QVERIFY(!QFileInfo::exists(escaped));
+    QVERIFY(QFileInfo::exists(QDir(dest).filePath(QStringLiteral("safe.txt"))));
 }
 
 // Parse directory, file and symlink blocks from 7z -slt output.
@@ -200,6 +250,36 @@ void TestUtils::unsafeExtractedSymlinks()
     const QStringList unsafe = FileUtils::unsafeExtractedSymlinks(temp.path());
     QCOMPARE(unsafe.size(), 1);
     QCOMPARE(unsafe.first(), QStringLiteral("sub/unsafe"));
+}
+
+// The temporary extraction tree can contain legacy-codepage names that QDir
+// cannot represent; the dedicated remover must still delete the whole tree
+// (otherwise cancelled/failed extractions leave ".tmp_extract_*" behind).
+// 解压临时目录可能包含 QDir 无法表示的旧代码页文件名；专用清理函数必须仍能
+// 删除整棵树（否则取消/失败的解压会残留 ".tmp_extract_*"）。
+void TestUtils::rawTemporaryDirectoryCleanup()
+{
+#ifdef Q_OS_WIN
+    QSKIP("raw legacy-codepage names are only produced on POSIX");
+#else
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QString tree = temp.filePath(QStringLiteral("tree"));
+    QVERIFY(QDir().mkpath(tree + QStringLiteral("/sub")));
+
+    const QByteArray encoded =
+        EncodingDetector::encode(QStringLiteral("中文.txt"), QStringLiteral("GBK"));
+    QVERIFY(!encoded.isEmpty());
+    const QByteArray rawPath =
+        QFile::encodeName(tree + QStringLiteral("/sub")) + '/' + encoded;
+    const int fd = ::open(rawPath.constData(), O_WRONLY | O_CREAT, 0600);
+    QVERIFY(fd >= 0);
+    ::close(fd);
+    QCOMPARE(::access(rawPath.constData(), F_OK), 0);
+
+    QVERIFY(FileUtils::removeTemporaryDirectory(tree));
+    QVERIFY(!QDir(tree).exists());
+#endif
 }
 
 // Streaming parser keeps member-name spaces and captures symlink/hardlink data.
@@ -390,6 +470,36 @@ void TestUtils::mimeAppsListCreatesMissingSections()
 // unambiguous byte strings, and hinted decoding must round-trip.
 // 对无歧义的字节串，旧式文件名检测不能依赖进程 locale；
 // 带提示的解码必须可逆。
+// The Open-dialog patterns and the file-association suffixes are generated
+// from the same registry, so a new format cannot be added to one list only.
+// 打开对话框模式与文件关联后缀来自同一注册表，新增格式时不会只更新一份列表。
+void TestUtils::formatRegistryFiltersAreConsistent()
+{
+    const QStringList suffixes = FormatRegistry::associationSuffixes();
+    QVERIFY(!suffixes.isEmpty());
+    for (const QString &suffix : suffixes) {
+        QVERIFY2(suffix.startsWith(QLatin1Char('.')), qPrintable(suffix));
+        QVERIFY2(FormatRegistry::formatFromSuffix(
+                     QStringLiteral("archive") + suffix)
+                     != ArchiveFormat::Unknown,
+                 qPrintable(suffix));
+    }
+
+    const QStringList patterns = FormatRegistry::openGlobPatterns();
+    for (const QString &suffix : suffixes) {
+        QVERIFY2(patterns.contains(QStringLiteral("*") + suffix),
+                 qPrintable(suffix));
+    }
+
+    // Split volumes must stay selectable; only their first volume has a
+    // magic signature.
+    // 分卷必须仍可在对话框中选中；只有首卷带魔数。
+    QVERIFY(patterns.contains(QStringLiteral("*.7z.*")));
+    QVERIFY(patterns.contains(QStringLiteral("*.zip.*")));
+    QVERIFY(patterns.contains(QStringLiteral("*.part*.rar")));
+    QVERIFY(patterns.contains(QStringLiteral("*.r??")));
+}
+
 void TestUtils::legacyEncodingDetection()
 {
     // "测试文本㐀_GBK.txt" in GB18030.  "㐀" (U+3400) is stored as the

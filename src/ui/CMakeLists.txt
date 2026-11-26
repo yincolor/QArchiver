@@ -5,9 +5,11 @@ add_library(qarchiver_ui STATIC
     # 主窗口（实现拆分为多个 MainWindow*.cpp）。
     MainWindow.cpp
     MainWindow.h
+    MainWindow_p.h
     MainWindowHelpers.cpp
     MainWindowHelpers.h
     MainWindowActions.cpp
+    MainWindowMenu.cpp
     MainWindowLayout.cpp
     MainWindowNavigation.cpp
     MainWindowExtraction.cpp
@@ -37,6 +39,8 @@ add_library(qarchiver_ui STATIC
     services/ExternalEditManager.h
     services/UpdateChecker.cpp
     services/UpdateChecker.h
+    services/OneClickExtractController.cpp
+    services/OneClickExtractController.h
 
     # Theming and icon helpers.
     # 主题与图标辅助代码。
@@ -100,7 +104,7 @@ target_include_directories(qarchiver_ui PUBLIC
 
 target_link_libraries(qarchiver_ui
     PUBLIC qarchiver_core Qt6::Widgets Qt6::Gui Qt6::Network
-    PRIVATE Qt6::Concurrent
+    PRIVATE Qt6::Concurrent Qt6::Svg
 )
 
 set_target_properties(qarchiver_ui PROPERTIES
@@ -108,3 +112,21 @@ set_target_properties(qarchiver_ui PROPERTIES
 )
 
 qarchiver_set_warnings(qarchiver_ui)
+
+# Most UI translation units include the same Qt headers; compile them once.
+# The list stays deliberately small so a missing include is still caught by
+# the regular compilation of targets that do not use the PCH.
+# 多数界面编译单元都包含相同的 Qt 头文件，这些头文件只编译一次。
+# 列表保持精简，其他不使用 PCH 的目标仍会发现缺失的 include。
+target_precompile_headers(qarchiver_ui PRIVATE
+    <QtCore/QCoreApplication>
+    <QtCore/QDir>
+    <QtCore/QFileInfo>
+    <QtCore/QString>
+    <QtGui/QIcon>
+    <QtGui/QPixmap>
+    <QtWidgets/QApplication>
+    <QtWidgets/QDialog>
+    <QtWidgets/QLabel>
+    <QtWidgets/QWidget>
+)

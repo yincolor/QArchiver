@@ -42,6 +42,7 @@ private slots:
     void tarRoundTrip();
     void tarCompressedRoundTrip_data();
     void tarCompressedRoundTrip();
+    void tarCompressedCacheInvalidation();
     void tarAddDelete();
     void tarStreamDetection();
     void tarDotPrefixAndNonAscii();
@@ -53,6 +54,8 @@ private slots:
     void rarSplitVolumes_data();
     void rarSplitVolumes();
     void rarSplitMissingVolume();
+    void splitVolumeDetection_data();
+    void splitVolumeDetection();
     void zipRoundTrip();
     void sevenZipRoundTrip();
     void sevenZipSpecialNames();
@@ -318,6 +321,60 @@ void TestBackends::tarCompressedRoundTrip()
              qPrintable(extracted.message));
     QCOMPARE(readFile(dest + QStringLiteral("/a.txt")),
              QStringLiteral("compressed"));
+}
+
+// Reusing the cached inner tar must be invalidated when the outer archive is
+// rewritten (size/mtime change), otherwise stale entries would be listed.
+// 外层压缩包被重写（大小/修改时间变化）时必须让缓存的内层 tar 失效，
+// 否则会列出过期条目。
+void TestBackends::tarCompressedCacheInvalidation()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QString archive = temp.filePath(QStringLiteral("cache.tar.gz"));
+
+    const auto createArchive = [&](const QString &name, const QString &content) {
+        const QString source = temp.filePath(name);
+        if (!writeFile(source, content.toUtf8())) {
+            return false;
+        }
+        TarBackend writer(ArchiveFormat::TarGz);
+        CompressOptions options;
+        options.archivePath = archive;
+        options.sourceFiles = {source};
+        options.compressionLevel = 1;
+        return compress(writer, options).success;
+    };
+
+    QVERIFY(createArchive(QStringLiteral("first.txt"), QStringLiteral("first")));
+
+    TarBackend reader(ArchiveFormat::TarGz);
+    reader.openArchive(archive);
+    bool listed = false;
+    auto entries = list(reader, &listed);
+    QVERIFY2(listed, "first compressed tar list failed");
+    QCOMPARE(entries.size(), 1);
+    QCOMPARE(entries.first().path, QStringLiteral("first.txt"));
+
+    // Replace the archive behind the open backend's back.
+    // 在已打开的后端背后替换压缩包。
+    QVERIFY(createArchive(QStringLiteral("second.txt"), QStringLiteral("second")));
+
+    listed = false;
+    entries = list(reader, &listed);
+    QVERIFY2(listed, "second compressed tar list failed");
+    QCOMPARE(entries.size(), 1);
+    QCOMPARE(entries.first().path, QStringLiteral("second.txt"));
+
+    const QString dest = temp.filePath(QStringLiteral("out"));
+    ExtractOptions extractOptions;
+    extractOptions.destDir = dest;
+    extractOptions.overwrite = OverwritePolicy::Always;
+    const auto extracted = extract(reader, extractOptions);
+    QVERIFY2(extracted.finished && extracted.success,
+             qPrintable(extracted.message));
+    QCOMPARE(readFile(dest + QStringLiteral("/second.txt")),
+             QStringLiteral("second"));
 }
 
 // Append and delete entries in an uncompressed tar.
@@ -775,6 +832,76 @@ void TestBackends::rarSplitVolumes()
     }
     QCOMPARE(readBytes(QDir(options.destDir).filePath(QStringLiteral("payload.bin"))),
              expected);
+}
+
+// 7z/zip split volumes only embed the format header in the .001 volume;
+// opening .002 must still resolve the first volume and detect the format.
+// 7z/zip 分卷只有 .001 带格式头；打开 .002 时仍必须解析首卷并识别格式。
+void TestBackends::splitVolumeDetection_data()
+{
+    QTest::addColumn<int>("format");
+    QTest::addColumn<QString>("suffix");
+
+    QTest::newRow("7z") << int(ArchiveFormat::SevenZip)
+                        << QStringLiteral(".7z");
+    QTest::newRow("zip") << int(ArchiveFormat::Zip)
+                         << QStringLiteral(".zip");
+}
+
+void TestBackends::splitVolumeDetection()
+{
+    QFETCH(int, format);
+    QFETCH(QString, suffix);
+
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    QByteArray payload;
+    payload.reserve(20000);
+    for (int i = 0; i < 20000; ++i) {
+        payload.append(static_cast<char>((i * 31 + 5) & 0xff));
+    }
+    const QString source = temp.filePath(QStringLiteral("payload.bin"));
+    QVERIFY(writeFile(source, payload));
+
+    const QString archive = temp.filePath(QStringLiteral("split") + suffix);
+    SevenZipBackend writer(static_cast<ArchiveFormat>(format));
+    CompressOptions options;
+    options.archivePath = archive;
+    options.sourceFiles = {source};
+    options.compressionLevel = 0;
+    options.volumeSize = 4096;
+    const auto compressed = compress(writer, options);
+    QVERIFY2(compressed.finished && compressed.success,
+             qPrintable(compressed.message));
+
+    const QString first = archive + QStringLiteral(".001");
+    const QString second = archive + QStringLiteral(".002");
+    QVERIFY(QFileInfo::exists(first));
+    QVERIFY(QFileInfo::exists(second));
+    QCOMPARE(MimeTypeHelper::detect(first), static_cast<ArchiveFormat>(format));
+    QCOMPARE(MimeTypeHelper::detect(second), static_cast<ArchiveFormat>(format));
+    QVERIFY(MimeTypeHelper::isSplitVolume(second));
+    QCOMPARE(QFileInfo(MimeTypeHelper::resolveFirstVolume(second)).canonicalFilePath(),
+             QFileInfo(first).canonicalFilePath());
+
+    SevenZipBackend reader(static_cast<ArchiveFormat>(format));
+    reader.openArchive(second);
+    bool listed = false;
+    const auto entries = list(reader, &listed);
+    QVERIFY2(listed, "split volume list failed");
+    QCOMPARE(entries.size(), 1);
+    QCOMPARE(entries.first().path, QStringLiteral("payload.bin"));
+
+    const QString dest = temp.filePath(QStringLiteral("out"));
+    ExtractOptions extractOptions;
+    extractOptions.destDir = dest;
+    extractOptions.overwrite = OverwritePolicy::Always;
+    const auto extracted = extract(reader, extractOptions);
+    QVERIFY2(extracted.finished && extracted.success,
+             qPrintable(extracted.message));
+    QCOMPARE(readBytes(QDir(dest).filePath(QStringLiteral("payload.bin"))),
+             payload);
 }
 
 // A missing middle volume must surface as VolumeMissing, not Unknown.

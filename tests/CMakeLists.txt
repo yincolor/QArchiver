@@ -1,32 +1,32 @@
 # Test suite: unit and integration tests for the core, backends and UI wiring.
-# 娴嬭瘯濂椾欢锛氳鐩栨牳蹇冨眰銆佸悗绔笌 UI 杩炴帴鏂瑰紡鐨勫崟鍏冨強闆嗘垚娴嬭瘯銆?
+# 测试套件：覆盖核心层、后端与 UI 连接方式的单元及集成测试。
 #
 # Every test links one of the layer libraries built by src/ instead of listing
 # source files, so adding a source file never requires touching this file.
-# 姣忎釜娴嬭瘯閮介摼鎺?src/ 鏋勫缓鐨勫垎灞傞潤鎬佸簱锛岃€屼笉鍐嶇綏鍒楁簮鏂囦欢锛?
-# 鍥犳鏂板婧愭枃浠舵棤闇€淇敼鏈枃浠躲€?
+# 每个测试都链接 src/ 构建的分层静态库，而不再罗列源文件，
+# 因此新增源文件无需修改本文件。
 
 # Qt Test is optional; the application itself does not require it.
-# Qt Test 鏄彲閫変緷璧栵紱搴旂敤鏈韩涓嶉渶瑕佸畠銆?
-find_package(Qt6 ${QARCHIVER_MIN_QT_VERSION} QUIET COMPONENTS Core Gui Widgets Concurrent Test Network)
+# Qt Test 是可选依赖；应用本身不需要它。
+find_package(Qt6 ${QARCHIVER_MIN_QT_VERSION} QUIET COMPONENTS Core Gui Widgets Concurrent Svg Test Network)
 if(NOT TARGET Qt6::Test)
     message(STATUS "Qt6::Test not found: skipping QArchiver tests")
     return()
 endif()
 
 # Enable moc/automoc for the standalone test executables.
-# 涓虹嫭绔嬫祴璇曞彲鎵ц鏂囦欢鍚敤 moc/automoc銆?
+# 为独立测试可执行文件启用 moc/automoc。
 set(CMAKE_AUTOMOC ON)
 
 # Helper: declare a Qt test executable and register it with CTest.
-# 杈呭姪鍑芥暟锛氬０鏄?Qt 娴嬭瘯鍙墽琛屾枃浠跺苟娉ㄥ唽鍒?CTest銆?
+# 辅助函数：声明 Qt 测试可执行文件并注册到 CTest。
 #
 # Tests that use QTEST_MAIN (i.e. need a QApplication) must also set
 # ENVIRONMENT "QT_QPA_PLATFORM=offscreen", otherwise they fail on headless
 # CI runners because the xcb plugin cannot connect to a display.
-# 浣跨敤 QTEST_MAIN锛堝嵆闇€瑕?QApplication锛夌殑娴嬭瘯蹇呴』鍚屾椂璁剧疆
-# ENVIRONMENT "QT_QPA_PLATFORM=offscreen"锛屽惁鍒欏湪鏃犳樉绀哄櫒鐨?CI 涓婁細鍥?
-# xcb 鎻掍欢杩炰笉涓?display 鑰屽け璐ャ€?
+# 使用 QTEST_MAIN（即需要 QApplication）的测试必须同时设置
+# ENVIRONMENT "QT_QPA_PLATFORM=offscreen"，否则在无显示器的 CI 上会因
+# xcb 插件连不上 display 而失败。
 #
 #   qarchiver_add_test(tst_name
 #       SOURCES  tst_name.cpp
@@ -48,21 +48,28 @@ function(qarchiver_add_test name)
 endfunction()
 
 # Utility tests: path normalization, traversal checks and -slt parsing.
-# 宸ュ叿娴嬭瘯锛氳矾寰勮鑼冨寲銆佽矾寰勭┛瓒婃鏌ヤ笌 -slt 瑙ｆ瀽銆?
+# 工具测试：路径规范化、路径穿越检查与 -slt 解析。
 qarchiver_add_test(tst_utils
     SOURCES tst_utils.cpp
     LIBS qarchiver_core
 )
 
+# One-click extraction planning: destination naming, split volumes and state.
+# 一键解压规划：目标命名、分卷与状态机。
+qarchiver_add_test(tst_oneclick
+    SOURCES tst_oneclick.cpp
+    LIBS qarchiver_ui
+)
+
 # Toolchain discovery: --help validation, system fallback and RAR codec probe.
-# 宸ュ叿閾惧彂鐜帮細--help 鏍￠獙銆佺郴缁熷洖閫€涓?RAR 缂栬В鐮佸櫒鎺㈡祴銆?
+# 工具链发现：--help 校验、系统回退与 RAR 编解码器探测。
 qarchiver_add_test(tst_toolchain
     SOURCES tst_toolchain.cpp
     LIBS qarchiver_utils
 )
 
 # Background image helpers: alignment, scaling, target rectangles and painting.
-# 鑳屾櫙鍥剧墖杈呭姪鍑芥暟锛氬榻愩€佺缉鏀俱€佺洰鏍囩煩褰笌缁樺埗銆?
+# 背景图片辅助函数：对齐、缩放、目标矩形与绘制。
 qarchiver_add_test(tst_background
     SOURCES tst_background.cpp
     LIBS qarchiver_ui
@@ -71,7 +78,7 @@ set_tests_properties(tst_background PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Backend tests: tar/zip/7z/RAR/stream round-trips and special names.
-# 鍚庣娴嬭瘯锛歵ar/zip/7z/RAR/娴佸線杩斿強鐗规畩鏂囦欢鍚嶃€?
+# 后端测试：tar/zip/7z/RAR/流往返及特殊文件名。
 qarchiver_add_test(tst_backends
     SOURCES tst_backends.cpp
     LIBS qarchiver_core
@@ -79,7 +86,7 @@ qarchiver_add_test(tst_backends
 )
 
 # External-edit write-back: change detection, staging and member replacement.
-# 澶栭儴缂栬緫鍐欏洖锛氫慨鏀规娴嬨€佹殏瀛樹笌鎴愬憳鏇挎崲銆?
+# 外部编辑写回：修改检测、暂存与成员替换。
 qarchiver_add_test(tst_externaledit
     SOURCES tst_externaledit.cpp
     LIBS qarchiver_ui
@@ -89,7 +96,7 @@ set_tests_properties(tst_externaledit PROPERTIES
 )
 
 # Location bar state after a write-through reopen (external-edit write-back).
-# 鍙鍚庣鍐欏洖閫€锛堝閮ㄧ紪杈戝啓鍥烇級鍚庣殑璺緞妗嗙姸鎬併€?
+# 只读后端写回退（外部编辑写回）后的路径框状态。
 qarchiver_add_test(tst_navstate
     SOURCES tst_navstate.cpp
     LIBS qarchiver_ui
@@ -99,7 +106,7 @@ set_tests_properties(tst_navstate PROPERTIES
 )
 
 # Continuous image preview: same-directory image selection and batch extraction.
-# 杩炵画鐪嬪浘锛氬悓鐩綍鍥剧墖閫夊彇涓庢壒閲忚В鍘嬨€?
+# 连续看图：同目录图片选取与批量解压。
 qarchiver_add_test(tst_preview
     SOURCES tst_preview.cpp
     LIBS qarchiver_ui
@@ -107,7 +114,7 @@ qarchiver_add_test(tst_preview
 )
 
 # ArchiveManager tests: async open/list/extract, fallback and preferences.
-# ArchiveManager 娴嬭瘯锛氬紓姝ユ墦寮€/鍒楄〃/瑙ｅ帇銆佸洖閫€涓庡亸濂借缃€?
+# ArchiveManager 测试：异步打开/列表/解压、回退与偏好设置。
 qarchiver_add_test(tst_manager
     SOURCES tst_manager.cpp
     LIBS qarchiver_ui
@@ -115,7 +122,7 @@ qarchiver_add_test(tst_manager
 )
 
 # libarchive backend: only built when the system library was found.
-# libarchive 鍚庣锛氫粎褰撴壘鍒扮郴缁熷簱鏃舵瀯寤恒€?
+# libarchive 后端：仅当找到系统库时构建。
 if(QARCHIVER_HAS_LIBARCHIVE)
     qarchiver_add_test(tst_libarchive
         SOURCES tst_libarchive.cpp
@@ -125,15 +132,15 @@ endif()
 
 # Drag-out staging (DragOutManager): needs the manager, AppSettings and the
 # backends, but no widgets - it runs headless.
-# 鎷栧嚭鏆傚瓨锛圖ragOutManager锛夛細闇€瑕佺鐞嗗櫒銆丄ppSettings 鍜屽悗绔紝
-# 浣嗕笉渚濊禆鎺т欢锛屽彲鏃犵晫闈㈣繍琛屻€?
+# 拖出暂存（DragOutManager）：需要管理器、AppSettings 和后端，
+# 但不依赖控件，可无界面运行。
 qarchiver_add_test(tst_dragout
     SOURCES tst_dragout.cpp
     LIBS qarchiver_ui
 )
 
 # Preferences and password dialog tests (offscreen QPA).
-# 鍋忓ソ璁剧疆涓庡瘑鐮佸璇濇娴嬭瘯锛堢灞?QPA锛夈€?
+# 偏好设置与密码对话框测试（离屏 QPA）。
 qarchiver_add_test(tst_preferences
     SOURCES tst_preferences.cpp
     LIBS qarchiver_ui
@@ -143,8 +150,8 @@ set_tests_properties(tst_preferences PROPERTIES
 
 # Immersive title bar and layout switching: drag area in the empty menu-bar
 # space, title bar survival across teardown/build, and token-driven colours.
-# 娌夋蹈寮忔爣棰樻爮涓庡竷灞€鍒囨崲锛氳彍鍗曟爮绌虹櫧澶勭殑鎷栨嫿鍖哄煙銆侀噸寤哄悗鏍囬鏍忔槸鍚︿繚鐣欍€?
-# 浠ュ強鍩轰簬 token 鐨勯厤鑹层€?
+# 沉浸式标题栏与布局切换：菜单栏空白处的拖拽区域、重建后标题栏是否保留、
+# 以及基于 token 的配色。
 qarchiver_add_test(tst_titlebar
     SOURCES tst_titlebar.cpp
     LIBS qarchiver_ui
@@ -156,7 +163,7 @@ set_tests_properties(tst_titlebar PROPERTIES
 
 # Frameless window resize: eight edge/corner hit zones, z-order above newly
 # built UI children, and disabling while maximized.
-# 鏃犺竟妗嗙獥鍙ｇ缉鏀撅細鍏釜杈圭紭/瑙掕惤鍛戒腑鍖恒€佹柊鐣岄潰鎺т欢涔嬩笂淇濇寔缃《銆佹渶澶у寲鏃剁鐢ㄣ€?
+# 无边框窗口缩放：八个边缘/角落命中区、新界面控件之上保持置顶、最大化时禁用。
 qarchiver_add_test(tst_windowresize
     SOURCES tst_windowresize.cpp
     LIBS qarchiver_ui
@@ -166,8 +173,8 @@ set_tests_properties(tst_windowresize PROPERTIES
 
 # Breadcrumb location bar: archive/local segment splitting, middle-level
 # hiding via the overflow menu, elision order and the selectable text mode.
-# 闈㈠寘灞戣矾寰勬锛氬帇缂╁寘/鏈湴璺緞鎷嗗垎銆佺敤 "..." 鏀剁撼涓棿灞傜骇銆佺渷鐣ラ『搴忎互鍙?
-# 鍙€変腑澶嶅埗鐨勬枃鏈ā寮忋€?
+# 面包屑路径框：压缩包/本地路径拆分、用 "..." 收纳中间层级、省略顺序以及
+# 可选中复制的文本模式。
 qarchiver_add_test(tst_breadcrumb
     SOURCES tst_breadcrumb.cpp
     LIBS qarchiver_ui
@@ -177,7 +184,7 @@ set_tests_properties(tst_breadcrumb PROPERTIES
 
 # System-places sidebar: no duplicate paths, ancestor highlighting for
 # subdirectories, and the file-system fallback outside Home.
-# 绯荤粺浣嶇疆渚ф爮锛氳矾寰勪笉閲嶅銆佸瓙鐩綍楂樹寒鎵€灞炰綅缃€丠ome 涔嬪鍥為€€鍒版枃浠剁郴缁熴€?
+# 系统位置侧栏：路径不重复、子目录高亮所属位置、Home 之外回退到文件系统。
 qarchiver_add_test(tst_folderpane
     SOURCES tst_folderpane.cpp
     LIBS qarchiver_ui
@@ -185,14 +192,13 @@ qarchiver_add_test(tst_folderpane
 set_tests_properties(tst_folderpane PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-
 # Make the bundled 7-Zip helper visible to every test that spawns a CLI
 # backend.  QARCHIVER_7Z_PATH is the first entry in
 # ProcessRunner::resolveToolPath(), so tests use exactly the binary that ships
 # with QArchiver even when no system 7z is installed.
-# 璁╂瘡涓細鍚姩 CLI 鍚庣鐨勬祴璇曢兘鑳芥壘鍒伴殢绋嬪簭鍒嗗彂鐨?7-Zip 杈呭姪绋嬪簭銆?
-# QARCHIVER_7Z_PATH 鏄?ProcessRunner::resolveToolPath() 鐨勭涓€浼樺厛绾э紝
-# 鍥犳鍗充娇绯荤粺鏈畨瑁?7z锛屾祴璇曚篃浼氫娇鐢?QArchiver 鑷甫鐨勪簩杩涘埗銆?
+# 让每个会启动 CLI 后端的测试都能找到随程序分发的 7-Zip 辅助程序。
+# QARCHIVER_7Z_PATH 是 ProcessRunner::resolveToolPath() 的第一优先级，
+# 因此即使系统未安装 7z，测试也会使用 QArchiver 自带的二进制。
 if(QARCHIVER_BUNDLE_7ZIP)
     set(_qarchiver_test_7z_env "QARCHIVER_7Z_PATH=${QARCHIVER_7ZIP_EXE}")
     foreach(_qarchiver_test IN ITEMS

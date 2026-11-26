@@ -10,6 +10,8 @@
 #include <QTimer>
 
 #include "app/CommandLine.h"
+#include "core/AppSettings.h"
+#include "core/ArchiveManager.h"
 #include "app/Translations.h"
 #include "ui/MainWindow.h"
 #include "ui/theme/ThemeManager.h"
@@ -19,7 +21,7 @@
 #ifndef QARCHIVER_VERSION
 // Fallback for builds outside CMake; CMakeLists.txt passes the real version.
 // CMake 之外的构建回退；CMakeLists.txt 会传入真实版本。
-#define QARCHIVER_VERSION "2.4.1"
+#define QARCHIVER_VERSION "2.4.2"
 #endif
 
 int main(int argc, char *argv[])
@@ -136,5 +138,12 @@ int main(int argc, char *argv[])
 
     const int ret = app.exec();
     LOG_INFO("main", "QArchiver exiting with code %d", ret);
+
+    // Stop the archive worker while QApplication is still alive instead of
+    // relying on static-destruction order (and never terminate the thread).
+    // 在 QApplication 仍存在时停止归档工作线程，而不是依赖静态析构顺序
+    //（也绝不 terminate 线程）。
+    ArchiveManager::instance().shutdown();
+    AppSettings::instance().flushPendingWrites();
     return ret;
 }

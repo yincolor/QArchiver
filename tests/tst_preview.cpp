@@ -4,13 +4,16 @@
 
 #include <QtTest>
 
+#include <QCryptographicHash>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QSet>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 
 #include "backends/tar/TarBackend.h"
+#include "ui/services/PreviewManager.h"
 #include "ui/services/PreviewUtils.h"
 #include "utils/FileUtils.h"
 #include "utils/ProcessRunner.h"
@@ -44,6 +47,7 @@ private slots:
     void skipsSymlinksAndSubdirectories();
     void extractsSelectedImages();
     void preparationDialogThreshold();
+    void clearArchiveCacheRemovesPreviews();
 
 private:
     QList<ArchiveEntry> listFixture();
@@ -206,6 +210,49 @@ void TestPreview::extractsSelectedImages()
 // non-cached batch, and fully cached batches never show it.
 // 准备对话框仅在严格超过阈值时出现；0 表示任意未完全缓存批次，
 // 已全部缓存时从不显示。
+// Closing an archive must drop its preview directory instead of leaving it in
+// the cache until the process exits.
+// 关闭压缩包时必须删除其预览目录，而不是留到进程退出。
+void TestPreview::clearArchiveCacheRemovesPreviews()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QString archive = temp.filePath(QStringLiteral("sample.zip"));
+    {
+        QFile file(archive);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("not a real archive"), qint64(18));
+    }
+
+    // Reproduce the per-archive directory identity used by PreviewManager.
+    // 复现 PreviewManager 使用的按归档目录标识。
+    const QFileInfo info(archive);
+    const QString identity =
+        archive + QLatin1Char('|') + QString::number(info.size())
+        + QLatin1Char('|')
+        + QString::number(info.lastModified().toMSecsSinceEpoch());
+    const QString hash = QCryptographicHash::hash(
+        identity.toUtf8(), QCryptographicHash::Md5).toHex();
+    const QString previewRoot = QDir(
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
+        .filePath(QStringLiteral("preview"));
+    const QString archiveDir =
+        QDir(QDir(previewRoot).filePath(
+                 QString::number(QCoreApplication::applicationPid())))
+            .filePath(hash);
+    QVERIFY(QDir().mkpath(archiveDir));
+    {
+        QFile marker(QDir(archiveDir).filePath(QStringLiteral("marker")));
+        QVERIFY(marker.open(QIODevice::WriteOnly));
+    }
+
+    PreviewManager::instance().clearArchiveCache(archive);
+    QVERIFY(!QDir(archiveDir).exists());
+
+    // An empty path is a no-op and must not throw or delete the process dir.
+    PreviewManager::instance().clearArchiveCache(QString());
+}
+
 void TestPreview::preparationDialogThreshold()
 {
     QVERIFY(!PreviewUtils::shouldShowPreparationDialog(200, 200, false));

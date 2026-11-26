@@ -4,6 +4,7 @@
 // MainWindow 拖出：把选中条目暂存为文件并启动标准文件 URL 拖拽。
 
 #include "ui/MainWindow.h"
+#include "ui/MainWindow_p.h"
 
 #include "ui/MainWindowHelpers.h"
 #include "ui/icons/IconUtils.h"
@@ -44,51 +45,7 @@
 
 #include "backends/ArchiveBackend.h"
 
-#include <QAbstractItemView>
-#include <QAction>
-#include <QApplication>
-#include <QCheckBox>
-#include <QCloseEvent>
-#include <QCoreApplication>
-#include <QDesktopServices>
-#include <QDialog>
-#include <QDir>
-#include <QDockWidget>
-#include <QDrag>
-#include <QDragEnterEvent>
-#include <QDropEvent>
-#include <QElapsedTimer>
-#include <QFileDialog>
-#include <QFileInfo>
-#include <QFrame>
-#include <QFutureWatcher>
-#include <QGuiApplication>
-#include <QHBoxLayout>
-#include <QHeaderView>
-#include <QIcon>
-#include <QItemSelectionModel>
-#include <QKeyEvent>
-#include <QLabel>
-#include <QLineEdit>
-#include <QLocale>
-#include <QMenu>
-#include <QMenuBar>
-#include <QMessageBox>
-#include <QMimeData>
-#include <QProgressBar>
-#include <QPushButton>
-#include <QSplitter>
-#include <QStackedWidget>
-#include <QStandardPaths>
-#include <QStatusBar>
-#include <QTimer>
-#include <QToolBar>
-#include <QTreeView>
-#include <QUrl>
-#include <QVBoxLayout>
-#include <QtConcurrent>
 
-#include <limits>
 
 
 // Drag out: stage the selected entries as real files, then start a standard

@@ -1,11 +1,14 @@
 // QArchiver / 小Q解压
-// MainWindow extraction: extract/add flows, one-click extraction and the
-// dialogs that drive them.
-// MainWindow 解压：解压/添加流程、一键解压以及驱动它们的对话框。
+// MainWindow extraction: extract/add flows, one-click extraction UI orchestration
+// and the dialogs that drive them.  Destination planning lives in
+// OneClickExtractController.
+// MainWindow 解压：解压/添加流程、一键解压界面编排以及驱动它们的对话框。
+// 目标目录规划位于 OneClickExtractController。
 
 #include "common/FormatRegistry.h"
 
 #include "ui/MainWindow.h"
+#include "ui/MainWindow_p.h"
 
 #include "ui/MainWindowHelpers.h"
 #include "ui/icons/IconUtils.h"
@@ -47,51 +50,7 @@
 
 #include "backends/ArchiveBackend.h"
 
-#include <QAbstractItemView>
-#include <QAction>
-#include <QApplication>
-#include <QCheckBox>
-#include <QCloseEvent>
-#include <QCoreApplication>
-#include <QDesktopServices>
-#include <QDialog>
-#include <QDir>
-#include <QDockWidget>
-#include <QDrag>
-#include <QDragEnterEvent>
-#include <QDropEvent>
-#include <QElapsedTimer>
-#include <QFileDialog>
-#include <QFileInfo>
-#include <QFrame>
-#include <QFutureWatcher>
-#include <QGuiApplication>
-#include <QHBoxLayout>
-#include <QHeaderView>
-#include <QIcon>
-#include <QItemSelectionModel>
-#include <QKeyEvent>
-#include <QLabel>
-#include <QLineEdit>
-#include <QLocale>
-#include <QMenu>
-#include <QMenuBar>
-#include <QMessageBox>
-#include <QMimeData>
-#include <QProgressBar>
-#include <QPushButton>
-#include <QSplitter>
-#include <QStackedWidget>
-#include <QStandardPaths>
-#include <QStatusBar>
-#include <QTimer>
-#include <QToolBar>
-#include <QTreeView>
-#include <QUrl>
-#include <QVBoxLayout>
-#include <QtConcurrent>
 
-#include <limits>
 
 void MainWindow::openArchivePath(const QString &path)
 {
@@ -102,7 +61,7 @@ void MainWindow::openArchivePath(const QString &path)
 
 void MainWindow::extractOneClickPath(const QString &path)
 {
-    m_oneClickPending = true;
+    m_oneClick.request();
     openFile(path);
 }
 
@@ -348,35 +307,6 @@ void MainWindow::onExtractSelected()
     startExtract(dlg.options());
 }
 
-QString MainWindow::oneClickArchiveBaseName(const QString &archivePath)
-{
-    QString name =
-        FormatRegistry::stripArchiveExtension(QFileInfo(archivePath).fileName());
-    if (name.isEmpty()) {
-        name = QStringLiteral("archive");
-    }
-    return name;
-}
-
-QString MainWindow::oneClickDestinationRoot() const
-{
-    const AppSettings &settings = AppSettings::instance();
-    QString root;
-    if (settings.oneClickExtractDestMode() == QStringLiteral("custom")) {
-        root = settings.oneClickExtractDest();
-    } else {
-        root = QFileInfo(ArchiveManager::instance().currentPath()).absolutePath();
-    }
-    if (root.isEmpty()) {
-        root = QStandardPaths::writableLocation(
-            QStandardPaths::DocumentsLocation);
-    }
-    if (root.isEmpty()) {
-        root = QDir::homePath();
-    }
-    return QDir::cleanPath(root);
-}
-
 bool MainWindow::askOneClickClosePreference()
 {
     // Shell integration never keeps a hidden window around: close as soon as
@@ -435,12 +365,12 @@ void MainWindow::beginOneClickExtract()
         return;
     }
     if (!m_listReady) {
-        m_oneClickPending = true;
+        m_oneClick.request();
         statusBar()->showMessage(tr("Reading archive contents..."), 4000);
         return;
     }
 
-    m_oneClickPending = false;
+    m_oneClick.clearPending();
     const bool closeAfter = askOneClickClosePreference();
 
     const auto failPreflight = [this](const QString &message) {
@@ -450,53 +380,25 @@ void MainWindow::beginOneClickExtract()
         }
     };
 
-    const QString root = oneClickDestinationRoot();
-    if (root.isEmpty() || !QDir().mkpath(root)) {
-        failPreflight(
-            tr("Cannot create the destination directory:\n%1").arg(root));
-        return;
-    }
-    if (!QFileInfo(root).isDir() || !QFileInfo(root).isWritable()) {
-        failPreflight(
-            tr("The destination directory is not writable:\n%1").arg(root));
-        return;
-    }
-
-    const QString archivePath = manager.currentPath();
-    const QString baseSource = MimeTypeHelper::isSplitVolume(archivePath)
-        ? MimeTypeHelper::resolveFirstVolume(archivePath)
-        : archivePath;
-    const QString baseName = oneClickArchiveBaseName(baseSource);
-    QString destination = QDir(root).filePath(baseName);
-    if (QFileInfo::exists(destination) || QFileInfo(destination).isSymLink()) {
-        destination = FileUtils::uniqueDestinationPath(destination);
-    }
-
-    ExtractOptions options;
-    options.destDir = destination;
-    options.preservePaths = true;
-    options.overwrite = OverwritePolicy::Always;
-    options.password = m_currentPassword;
-    options.openDestAfterFinish = false;
-
     // One-click extraction applies to the current selection.  With no
     // selection the whole archive is extracted.
     // 一键解压处理当前选择；没有选择时解压整个压缩包。
-    const QStringList selected = selectedEntryPaths();
-    if (!selected.isEmpty()) {
-        options.selectedFiles = selected;
+    const OneClickExtractController::Plan plan = m_oneClick.plan(
+        manager.currentPath(), selectedEntryPaths(), m_currentPassword,
+        closeAfter);
+    if (!plan.ok) {
+        failPreflight(plan.errorMessage);
+        return;
     }
 
-    m_oneClickExtractActive = true;
-    m_oneClickCloseAfter = closeAfter;
-    m_openDestAfterExtract = AppSettings::instance().openDestAfterFinish()
-        && !closeAfter;
-    m_lastExtractDest = destination;
+    m_oneClick.start(plan.closeAfter);
+    m_openDestAfterExtract = plan.openDestAfterFinish;
+    m_lastExtractDest = plan.destination;
     m_currentOp = UiOp::Extract;
 
     statusBar()->showMessage(
-        tr("One-click extracting to %1").arg(destination), 8000);
-    manager.extract(options);
+        tr("One-click extracting to %1").arg(plan.destination), 8000);
+    manager.extract(plan.options);
     if (manager.isBusy()) {
         showProgressDialog(tr("One-click Extract..."));
     }
@@ -510,7 +412,7 @@ void MainWindow::onOneClickExtract()
     }
 
     if (ArchiveManager::instance().backend()) {
-        m_oneClickPending = true;
+        m_oneClick.request();
         if (m_listReady) {
             beginOneClickExtract();
         } else {
@@ -524,6 +426,6 @@ void MainWindow::onOneClickExtract()
     if (path.isEmpty()) {
         return;
     }
-    m_oneClickPending = true;
+    m_oneClick.request();
     openFile(path);
 }

@@ -5,6 +5,7 @@
 // Main application window with the modern (HaoZip-style) and classic layouts.
 // 主应用窗口：现代（好压风格）与经典两种布局。
 
+#include <QFutureWatcher>
 #include <QList>
 #include <QMainWindow>
 #include <QPointer>
@@ -13,6 +14,7 @@
 #include "common/ArchiveEntry.h"
 #include "common/ArchiveError.h"
 #include "common/ArchiveOptions.h"
+#include "ui/services/OneClickExtractController.h"
 
 class FileListModel;
 class FilterProxyModel;
@@ -144,7 +146,7 @@ private slots:
     void onFileListReady(const QList<ArchiveEntry> &entries);
     void onProgressChanged(int percent, int total, int current, int etaSec);
     void onOutputReady(const QString &line);
-    void onPasswordRequested();
+    void onPasswordRequested(bool wrongPassword = false);
     void onErrorOccurred(ArchiveErrorCode code, const QString &msg);
     void onOperationFinished(bool success, const QString &msg);
 
@@ -242,8 +244,6 @@ private:
     // One-click extraction / 一键解压
     void beginOneClickExtract();
     bool askOneClickClosePreference();
-    QString oneClickDestinationRoot() const;
-    static QString oneClickArchiveBaseName(const QString &archivePath);
 
     // Local directory browsing / 本地目录浏览
     void loadLocalDirectory(const QString &path, bool addHistory);
@@ -347,14 +347,22 @@ private:
     int m_navIndex = -1;
     QString m_navCurrentDir;
 
-    // One-click extraction state / 一键解压状态
-    bool m_oneClickPending = false;
-    bool m_oneClickExtractActive = false;
-    bool m_oneClickCloseAfter = false;
+    // One-click extraction state and destination planning / 一键解压状态与目标规划
+    OneClickExtractController m_oneClick;
 
     // Local directory browsing state / 本地目录浏览状态
     bool m_localBrowse = false;
     QString m_localBrowseDir;
+    // Directory enumeration runs on a worker thread; the generation guards
+    // against a slow scan overwriting a newer navigation.
+    // 目录枚举在工作线程执行；generation 防止慢扫描覆盖较新的导航结果。
+    quint64 m_localBrowseGeneration = 0;
+    QFutureWatcher<QList<ArchiveEntry>> *m_localScanWatcher = nullptr;
+
+    // Archive whose preview cache is currently in use; cleared when the
+    // archive is closed or replaced so stale previews do not accumulate.
+    // 当前正在使用其预览缓存的压缩包；关闭或替换时清理，避免旧预览堆积。
+    QString m_previewArchivePath;
 
     // Immediate compression state (context menu / command line)
     // 立即压缩状态（右键菜单/命令行）

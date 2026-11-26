@@ -13,7 +13,7 @@ StartupNotify=true
 StartupWMClass=QArchiver
 Categories=Utility;Archiving;
 Keywords=archive;compress;extract;zip;7z;rar;tar;压缩;解压;
-MimeType=application/x-7z-compressed;application/zip;application/x-tar;application/gzip;application/vnd.rar;application/x-rar-compressed;application/x-xz;application/x-bzip2;application/x-iso9660-image;
+MimeType=application/x-7z-compressed;application/zip;application/x-tar;application/gzip;application/vnd.rar;application/x-rar-compressed;application/x-xz;application/x-bzip2;application/x-iso9660-image;application/x-compressed-tar;application/x-xz-compressed-tar;application/x-bzip2-compressed-tar;application/x-zstd-compressed-tar;application/zstd;
 Actions=OneClickExtract;
 
 [Desktop Action OneClickExtract]

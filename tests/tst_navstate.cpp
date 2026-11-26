@@ -32,6 +32,7 @@
 #include "core/ArchiveBackendFactory.h"
 #include "core/ArchiveManager.h"
 #include "ui/MainWindow.h"
+#include "ui/models/FileListModel.h"
 #include "ui/widgets/BreadcrumbPathBar.h"
 
 namespace {
@@ -81,6 +82,7 @@ private slots:
     void init();
 
     void classicStartPageUsesLocalBrowser();
+    void localDirectoryListingIsAsync();
     void locationBarRefreshesAfterWriteThroughReopen_data();
     void locationBarRefreshesAfterWriteThroughReopen();
 
@@ -173,6 +175,51 @@ void TestNavState::classicStartPageUsesLocalBrowser()
 
     AppSettings::instance().setLocalBrowsePath(savedBrowsePath);
     AppSettings::instance().setUiLayoutMode(m_savedLayout);
+}
+
+// Local directory enumeration runs off the GUI thread; a stale scan must not
+// overwrite the model after the user navigated again.
+// 本地目录枚举在 GUI 线程之外执行；用户重新导航后旧扫描不能覆盖模型。
+void TestNavState::localDirectoryListingIsAsync()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QString first = temp.filePath(QStringLiteral("first"));
+    const QString second = temp.filePath(QStringLiteral("second"));
+    QVERIFY(QDir().mkpath(first));
+    QVERIFY(QDir().mkpath(second));
+    QVERIFY(writeFile(QDir(first).filePath(QStringLiteral("only-first.txt")),
+                      QByteArrayLiteral("1")));
+    QVERIFY(writeFile(QDir(second).filePath(QStringLiteral("only-second.txt")),
+                      QByteArrayLiteral("2")));
+
+    const QString savedPath = AppSettings::instance().localBrowsePath();
+    const QString savedLayout = AppSettings::instance().uiLayoutMode();
+    AppSettings::instance().setUiLayoutMode(QStringLiteral("classic"));
+    AppSettings::instance().setLocalBrowsePath(first);
+    {
+        MainWindow window;
+        QVERIFY(window.isBrowsingLocalDirectory());
+
+        // The entries arrive through the event loop, not synchronously.
+        // 条目通过事件循环到达，而不是同步填充。
+        QTRY_VERIFY_WITH_TIMEOUT(window.m_model->rowCount() == 1, 5000);
+        QCOMPARE(window.m_model->index(0, 0).data(Qt::DisplayRole).toString(),
+                 QStringLiteral("only-first.txt"));
+
+        // Two rapid navigations: the newest directory must win.
+        // 连续两次导航：最新目录必须胜出。
+        window.browseLocalDirectory(second);
+        window.browseLocalDirectory(first);
+        QTest::qWait(200);
+        QTRY_VERIFY_WITH_TIMEOUT(window.m_model->rowCount() == 1, 5000);
+        QCOMPARE(window.m_model->index(0, 0).data(Qt::DisplayRole).toString(),
+                 QStringLiteral("only-first.txt"));
+        QVERIFY(window.m_localBrowseDir == first);
+    }
+
+    AppSettings::instance().setLocalBrowsePath(savedPath);
+    AppSettings::instance().setUiLayoutMode(savedLayout);
 }
 
 void TestNavState::locationBarRefreshesAfterWriteThroughReopen_data()

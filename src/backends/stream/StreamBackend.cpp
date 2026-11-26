@@ -158,17 +158,17 @@ void StreamBackend::extract(const ExtractOptions &options)
         });
 
     if (result.cancelled) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::Cancelled, tr("Operation cancelled"));
         return;
     }
     if (!result.started) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::ToolNotFound, tr("Failed to start 7z"));
         return;
     }
     if (!result.success()) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::CorruptedArchive,
                            tr("Decompression failed (corrupted stream)"));
         return;
@@ -182,7 +182,7 @@ void StreamBackend::extract(const ExtractOptions &options)
     }
 
     if (extractedFiles.isEmpty()) {
-        FileUtils::removeDirectoryRecursively(tempDir);
+        FileUtils::removeTemporaryDirectory(tempDir);
         emit errorOccurred(ArchiveErrorCode::CorruptedArchive,
                            tr("The stream did not contain any file"));
         return;
@@ -212,13 +212,13 @@ void StreamBackend::extract(const ExtractOptions &options)
         }
 
         if (!FileUtils::moveFileAtomically(source, destPath)) {
-            FileUtils::removeDirectoryRecursively(tempDir);
+            FileUtils::removeTemporaryDirectory(tempDir);
             emit errorOccurred(ArchiveErrorCode::Unknown,
                                tr("Failed to move extracted file to %1").arg(destPath));
             return;
         }
     }
-    FileUtils::removeDirectoryRecursively(tempDir);
+    FileUtils::removeTemporaryDirectory(tempDir);
 
     emit progressChanged(100, 1, 1, -1);
     emit operationFinished(true, tr("Decompression completed"));

@@ -95,10 +95,10 @@ git push origin 2.4.1
 - Icons for common file kinds: images, audio/video, PDF, Office, code, fonts, disk images, e-books, databases, torrents, design files, subtitles, 3D/CAD, packages, and more
 - Native system file dialogs; compression sources ask for files or a folder, then use the native dialog
 - Images in archives and local folders show real thumbnails (read/extracted in the background and
-  persistently cached): modern grid/list/tree views all show them, with modern list thumbnails fitted
-  to the row height and a bounded width; the classic layout only shows thumbnails in the grid view,
-  while its list/tree keep the regular image icon. Double-click still opens the system viewer for
-  continuous browsing
+  persistently cached), including PNG/JPEG/WebP/SVG: modern grid/list/tree views all show them,
+  with modern list thumbnails fitted to the row height and a bounded width; the classic layout
+  only shows thumbnails in the grid view, while its list/tree keep the regular image icon.
+  Double-click still opens the system viewer for continuous browsing
 - Drag-out: drag selected entries directly to a file manager/desktop to extract them while preserving directory structure
   (extraction happens in the background to a staging directory, cancellable with `Esc`; a second drag of the same selection is zero-latency)
 
@@ -181,7 +181,7 @@ Build-time (Debian/Ubuntu package names, available from Qt 6.4):
 
 | Dependency | Required | Notes |
 | --- | --- | --- |
-| Qt 6.4+ (Core Gui Widgets Concurrent) | Required | `qt6-base-dev (>= 6.4)` |
+| Qt 6.4+ (Core / Gui / Widgets / Concurrent / Svg) | Required | `qt6-base-dev (>= 6.4)`, `qt6-svg-dev (>= 6.4)`; `Svg` provides `QSvgRenderer` for SVG thumbnails |
 | Qt LinguistTools (lupdate/lrelease) | Required | `qt6-tools-dev (>= 6.4)`, translations are compiled at build time |
 | CMake 3.20+, GCC 12+/Clang 15+ (C++20) | Required | |
 | libarchive 3.4+ (development headers) | Optional (enabled by default) | `libarchive-dev`; if missing, only a WARNING is shown and it automatically falls back to the pure command-line backend |
@@ -194,6 +194,7 @@ Runtime:
 | 7-Zip CLI | Bundled | `third_party/7zip/` (Linux `7zzs`, Windows `7z.exe + 7z.dll`) distributed with the program; handles 7z/zip/tar read/write, pure stream extraction, and RAR reading |
 | rar command | Optional | Enables RAR creation and RAR volume creation only when installed on the system; `QARCHIVER_RAR_PATH` can specify the path |
 | libarchive13 | Required when libarchive is enabled | The program loads the shared library detected at build time |
+| Qt SVG runtime | Required | `libqt6svg6`, used to render SVG thumbnails; `${shlibs:Depends}` declares it automatically when linked. On Windows, `windeployqt` deploys `Qt6Svg.dll` |
 | qt6-translations-l10n | Optional | Provides `qtbase_<lang>.qm` for localizing standard dialog buttons and file dialogs; if missing, the application's own text is still translated |
 
 At build time, the 7-Zip helper for the current architecture is copied next to the executable into the `7zip/`
@@ -254,6 +255,7 @@ Common options:
 | `-DQARCHIVER_USE_LIBARCHIVE=ON|OFF` | `ON` | When off, only the command-line backend is compiled and libarchive is not linked |
 | `-DCMAKE_BUILD_TYPE=Release|Debug|RelWithDebInfo` | empty | |
 | `-DBUILD_TESTING=OFF` | `ON` | Whether to generate `tests/` |
+| `-DQARCHIVER_ENABLE_SANITIZERS=ON` | `OFF` | Build with ASan + UBSan (GCC/Clang only; combine with Debug and `BUILD_TESTING=ON`) |
 
 If libarchive only provides a pkg-config file and no CMake config package, the build script automatically
 falls back to `pkg_check_modules`.
@@ -381,7 +383,9 @@ manager (dispatch, cancellation, fallback, keeping the current archive on open f
 libarchive backend (round-trip, AES password, corruption detection, selective extraction, hard link reconstruction),
 preferences dialog and config sync (continuous image threshold, recent files limit), RAR/RAR volume creation and
 old volume replacement, fallback 7-Zip `--help` validation and RAR Codecs detection, continuous viewing of images in the same directory,
-list-mode directory indexing, background image caching, the immersive title bar (kept across
+one-click extraction destination planning (compound suffixes, split first volume, existing-directory avoidance),
+SVG thumbnails (local and archive entries, rendered with `QSvgRenderer`), list-mode directory indexing,
+background image caching, the immersive title bar (kept across
 layout switches, draggable menu-bar gap, token-driven colours), and the system-places sidebar
 (no duplicate paths, subdirectory ancestor highlighting, file-system fallback). Tests use the bundled 7-Zip via `QARCHIVER_7Z_PATH`;
 RAR creation test cases are automatically skipped when the system has no `rar`, and `QARCHIVER_RAR_PATH` can be used to
@@ -393,7 +397,7 @@ test cases that depend on Unix symlinks are automatically skipped on Windows.
 
 | Environment Variable | Purpose |
 | --- | --- |
-| `SAM_DEBUG=1` | Output Debug-level logs |
+| `QARCHIVER_DEBUG=1` | Output Debug-level logs (legacy `SAM_DEBUG` is still accepted) |
 | `QARCHIVER_NO_LIBARCHIVE=1` | Disable the libarchive backend at startup |
 | `QARCHIVER_7Z_PATH` | Explicitly specify the 7-Zip command-line tool path, skipping automatic detection |
 | `QARCHIVER_RAR_PATH` | Explicitly specify the rar command path, used for RAR creation |

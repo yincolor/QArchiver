@@ -1,6 +1,6 @@
 # Qt runtime dependencies for the application target.
 # 应用目标所需的 Qt 运行时依赖。
-find_package(Qt6 ${QARCHIVER_MIN_QT_VERSION} REQUIRED COMPONENTS Core Gui Widgets Concurrent Network)
+find_package(Qt6 ${QARCHIVER_MIN_QT_VERSION} REQUIRED COMPONENTS Core Gui Widgets Concurrent Network Svg)
 
 # GNUInstallDirs provides the standard bin/lib/share install destinations.
 # GNUInstallDirs 提供标准的 bin/lib/share 安装目录变量。

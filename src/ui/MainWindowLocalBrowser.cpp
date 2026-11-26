@@ -7,6 +7,7 @@
 #include "common/FormatRegistry.h"
 
 #include "ui/MainWindow.h"
+#include "ui/MainWindow_p.h"
 
 #include "ui/MainWindowHelpers.h"
 #include "ui/icons/IconUtils.h"
@@ -15,6 +16,7 @@
 #include "ui/models/FilterProxyModel.h"
 #include "ui/models/FileListViewDelegate.h"
 #include "ui/services/PreviewManager.h"
+#include "ui/services/ThumbnailManager.h"
 #include "ui/services/PreviewUtils.h"
 #include "ui/services/DragOutManager.h"
 #include "ui/widgets/ArchiveTreeView.h"
@@ -47,51 +49,42 @@
 
 #include "backends/ArchiveBackend.h"
 
-#include <QAbstractItemView>
-#include <QAction>
-#include <QApplication>
-#include <QCheckBox>
-#include <QCloseEvent>
-#include <QCoreApplication>
-#include <QDesktopServices>
-#include <QDialog>
-#include <QDir>
-#include <QDockWidget>
-#include <QDrag>
-#include <QDragEnterEvent>
-#include <QDropEvent>
-#include <QElapsedTimer>
-#include <QFileDialog>
-#include <QFileInfo>
-#include <QFrame>
-#include <QFutureWatcher>
-#include <QGuiApplication>
-#include <QHBoxLayout>
-#include <QHeaderView>
-#include <QIcon>
-#include <QItemSelectionModel>
-#include <QKeyEvent>
-#include <QLabel>
-#include <QLineEdit>
-#include <QLocale>
-#include <QMenu>
-#include <QMenuBar>
-#include <QMessageBox>
-#include <QMimeData>
-#include <QProgressBar>
-#include <QPushButton>
-#include <QSplitter>
-#include <QStackedWidget>
-#include <QStandardPaths>
-#include <QStatusBar>
-#include <QTimer>
-#include <QToolBar>
-#include <QTreeView>
-#include <QUrl>
-#include <QVBoxLayout>
-#include <QtConcurrent>
 
-#include <limits>
+
+namespace {
+
+// Read a local directory off the GUI thread.  Size and modification time are
+// filled in here so the delegate does not have to stat every row while
+// painting.
+// 在 GUI 线程之外读取本地目录；这里一并填充大小与修改时间，避免绘制时逐行
+// stat。
+QList<ArchiveEntry> enumerateLocalDirectory(const QString &directory)
+{
+    QList<ArchiveEntry> entries;
+    const QDir dir(directory);
+    const QFileInfoList infos = dir.entryInfoList(
+        QDir::AllEntries | QDir::NoDotAndDotDot,
+        QDir::DirsFirst | QDir::Name | QDir::IgnoreCase);
+    entries.reserve(infos.size());
+    for (const QFileInfo &fileInfo : infos) {
+        ArchiveEntry entry;
+        // Local entries use the bare file name as their model path; the
+        // absolute path is rebuilt from m_localBrowseDir when needed.
+        // 本地条目以纯文件名作为模型路径；需要时用 m_localBrowseDir 还原
+        // 绝对路径。
+        entry.path = fileInfo.fileName();
+        entry.isDir = fileInfo.isDir();
+        entry.isSymLink = fileInfo.isSymLink();
+        if (!entry.isDir) {
+            entry.size = fileInfo.size();
+        }
+        entry.mtime = fileInfo.lastModified();
+        entries.append(entry);
+    }
+    return entries;
+}
+
+} // namespace
 
 void MainWindow::browseLocalDirectory(const QString &path)
 {
@@ -124,7 +117,13 @@ void MainWindow::loadLocalDirectory(const QString &path, bool addHistory)
     // 本地列表会取代压缩包视图；先释放压缩包，避免管理器与本地浏览器同时
     // 持有同一份内容。
     if (ArchiveManager::instance().backend()) {
+        const QString archivePath = ArchiveManager::instance().currentPath();
+        if (!archivePath.isEmpty()) {
+            PreviewManager::instance().clearArchiveCache(archivePath);
+        }
+        m_previewArchivePath.clear();
         ArchiveManager::instance().closeArchive();
+        ThumbnailManager::instance().clearArchiveCache();
         DragOutManager::instance().clearCache();
         m_currentPassword.clear();
         m_listReady = false;
@@ -135,31 +134,39 @@ void MainWindow::loadLocalDirectory(const QString &path, bool addHistory)
     m_localBrowseDir = directory;
     AppSettings::instance().setLocalBrowsePath(directory);
 
-    QList<ArchiveEntry> entries;
-    const QFileInfoList infos = dir.entryInfoList(
-        QDir::AllEntries | QDir::NoDotAndDotDot,
-        QDir::DirsFirst | QDir::Name | QDir::IgnoreCase);
-    entries.reserve(infos.size());
-    for (const QFileInfo &fileInfo : infos) {
-        ArchiveEntry entry;
-        // Local entries use the bare file name as their model path; the
-        // absolute path is rebuilt from m_localBrowseDir when needed.
-        // 本地条目以纯文件名作为模型路径；需要时用 m_localBrowseDir 还原
-        // 绝对路径。
-        entry.path = fileInfo.fileName();
-        entry.isDir = fileInfo.isDir();
-        entry.isSymLink = fileInfo.isSymLink();
-        if (!entry.isDir) {
-            entry.size = fileInfo.size();
-        }
-        entry.mtime = fileInfo.lastModified();
-        entries.append(entry);
-    }
-
     m_model->setArchiveContext(QString(), ArchiveFormat::Unknown, QString());
     m_model->setLocalContext(directory);
-    m_model->setEntries(entries);
+    // Clear the list and let the entries arrive asynchronously, so a huge
+    // directory cannot freeze the GUI thread.
+    // 先清空列表，条目异步到达，避免超大目录卡住 GUI 线程。
+    m_model->setEntries({});
     m_model->setFlatMode(true);
+
+    const quint64 generation = ++m_localBrowseGeneration;
+    auto *watcher = new QFutureWatcher<QList<ArchiveEntry>>(this);
+    m_localScanWatcher = watcher;
+    connect(watcher, &QFutureWatcher<QList<ArchiveEntry>>::finished, this,
+            [this, watcher, generation, directory]() {
+                watcher->deleteLater();
+                if (m_localScanWatcher == watcher) {
+                    m_localScanWatcher = nullptr;
+                }
+                // Drop the result when the user navigated again in the
+                // meantime; the newer scan owns the model now.
+                // 用户期间又导航过时丢弃该结果；新的扫描负责更新模型。
+                if (generation != m_localBrowseGeneration
+                    || !m_localBrowse
+                    || m_localBrowseDir != directory) {
+                    return;
+                }
+                const QList<ArchiveEntry> entries = watcher->result();
+                m_model->setEntries(entries);
+                statusBar()->showMessage(
+                    tr("%1 items").arg(entries.size()), 3000);
+            });
+    statusBar()->showMessage(tr("Reading %1...").arg(directory));
+    watcher->setFuture(QtConcurrent::run(
+        [directory]() { return enumerateLocalDirectory(directory); }));
     m_navCurrentDir.clear();
     setSearchText(QString());
 
@@ -198,7 +205,6 @@ void MainWindow::loadLocalDirectory(const QString &path, bool addHistory)
     updateLocalModeUi();
     setWindowTitle(tr("QArchiver - %1").arg(directory));
     setBusyIndicatorVisible(false);
-    statusBar()->showMessage(tr("%1 items").arg(entries.size()), 3000);
 }
 
 void MainWindow::refreshLocalDirectory()
