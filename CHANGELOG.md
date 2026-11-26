@@ -5,6 +5,8 @@ All notable changes to QArchiver (小Q解压) are documented here.
 
 ## [Unreleased]
 
+## [2.4.3] - 2026-11-27
+
 作者：shenmo <shenmo@spark-app.store>
 
 ### Added / 新增
@@ -67,6 +69,8 @@ All notable changes to QArchiver (小Q解压) are documented here.
   插件；同时缩放至缩略图框内并保持宽高比。新增 SVG 缩略图回归测试。
 - 修复无边框主窗口启动时被窗口管理器放到屏幕右下角等任意位置的问题：首次显示
   时在主屏可用区域内居中，之后保留用户手动移动的位置。
+- 修复 Debian 12 CI 中 `tst_navstate` 未获得内置 7-Zip 路径、在无系统 `7z`
+  环境下被“未找到 7-Zip”模态提示框阻塞并超时的问题。
 
 ## [2.4.2] - 2026-11-26
 
@@ -376,4 +380,5 @@ All notable changes to QArchiver (小Q解压) are documented here.
 [2.4.0-2]: https://github.com/shenmo7192/QArchiver/releases/tag/2.4.0-2
 [2.4.0]: https://github.com/shenmo7192/QArchiver/releases/tag/v2.4.0
 [2.4.1]: https://github.com/shenmo7192/QArchiver/releases/tag/v2.4.1
+[2.4.3]: https://github.com/yincolor/QArchiver/releases/tag/v2.4.3
 [2.4.2]: https://github.com/shenmo7192/QArchiver/releases/tag/v2.4.2

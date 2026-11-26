@@ -1,3 +1,16 @@
+yincolor.qarchiver (2.4.3) unstable; urgency=medium
+
+  * Read ISO9660/UDF disc images, falling back to the bundled 7-Zip helper
+    for UDF images libarchive cannot handle.
+  * Save external edits back into zip, 7z and uncompressed tar archives.
+  * Add shared clickable breadcrumb path bars in both layouts, with overflow
+    navigation and a selectable full-path mode.
+  * Add frameless window edge/corner resizing and local image thumbnails.
+  * Fix the tst_navstate timeout on Debian 12 CI when no system 7z is
+    installed by passing the bundled 7-Zip path to the test.
+
+ -- shenmo <shenmo@spark-app.store>  Fri, 27 Nov 2026 03:30:00 +0800
+
 yincolor.qarchiver (2.4.2) unstable; urgency=medium
 
   * Add Help -> Check for Updates, powered by the public GitHub Releases
