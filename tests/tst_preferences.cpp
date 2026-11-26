@@ -7,13 +7,16 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QDateTime>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QImage>
 #include <QPushButton>
 #include <QPlainTextEdit>
 #include <QSettings>
+#include <QTemporaryDir>
 
 #include "core/ArchiveBackendFactory.h"
 #include "core/AppSettings.h"
@@ -22,6 +25,7 @@
 #include "ui/icons/FileTypeHelper.h"
 #include "ui/models/FileListViewDelegate.h"
 #include "ui/models/FileListModel.h"
+#include "ui/services/ThumbnailManager.h"
 #include "ui/dialogs/PasswordDialog.h"
 #include "ui/dialogs/PreferencesDialog.h"
 #include "ui/dialogs/BenchmarkDialog.h"
@@ -47,6 +51,8 @@ private slots:
     void listModeDirectoryIndexPreservesEntries();
     void gridModeHidesParentEntry();
     void thumbnailsEnabledRole();
+    void localThumbnailContextRole();
+    void localThumbnailGenerated();
     void thumbnailDisplaySize();
     void splitVolumeIcons();
     void fileTypeKindPriority();
@@ -478,6 +484,70 @@ void TestPreferences::thumbnailsEnabledRole()
 
     model.setThumbnailsEnabled(false);
     QVERIFY(!index.data(FileListModel::IsThumbnailRole).toBool());
+}
+
+// Local directory entries use the same thumbnail role as archive members, but
+// with a local directory context instead of an archive path.
+// 本地目录条目与压缩包成员共用缩略图角色，只是使用本地目录上下文而不是
+// 压缩包路径。
+void TestPreferences::localThumbnailContextRole()
+{
+    FileListModel model;
+    ArchiveEntry entry;
+    entry.path = QStringLiteral("photos/a.png");
+    entry.size = 42;
+    entry.mtime = QDateTime::currentDateTime();
+    model.setEntries({entry});
+    model.setThumbnailsEnabled(true);
+    model.setArchiveContext(QString(), ArchiveFormat::Unknown, QString());
+
+    const QModelIndex index = model.indexForPath(entry.path);
+    QVERIFY(index.isValid());
+    QVERIFY(!index.data(FileListModel::IsThumbnailRole).toBool());
+
+    const QString localRoot = QDir::tempPath();
+    model.setLocalContext(localRoot);
+    QCOMPARE(model.localContext(), localRoot);
+    QVERIFY(index.data(FileListModel::IsThumbnailRole).toBool());
+
+    // Switching back to archive context (even an empty one) clears the local
+    // root so archive thumbnails cannot read files from the old directory.
+    // 切回压缩包上下文（即使路径为空）会清除本地目录，避免压缩包缩略图从旧
+    // 目录读取文件。
+    model.setArchiveContext(QString(), ArchiveFormat::Unknown, QString());
+    QCOMPARE(model.localContext(), QString());
+    QVERIFY(!index.data(FileListModel::IsThumbnailRole).toBool());
+}
+
+// A local image is rendered asynchronously into the same persistent thumbnail
+// cache used by archive entries.
+// 本地图片与压缩包条目一样，异步渲染到同一个持久缩略图缓存。
+void TestPreferences::localThumbnailGenerated()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString imagePath = temp.filePath(QStringLiteral("image.png"));
+    QImage image(40, 20, QImage::Format_ARGB32);
+    image.fill(Qt::red);
+    QVERIFY(image.save(imagePath));
+
+    const QFileInfo info(imagePath);
+    QSignalSpy readySpy(&ThumbnailManager::instance(),
+                        &ThumbnailManager::localThumbnailReady);
+    const QIcon fallback = ThumbnailManager::instance().localIcon(
+        imagePath, info.size(), info.lastModified());
+    QVERIFY(!fallback.isNull());
+
+    QTRY_VERIFY_WITH_TIMEOUT(readySpy.count() >= 1, 5000);
+    QCOMPARE(readySpy.first().at(0).toString(), imagePath);
+
+    // The completed thumbnail is now served from the in-memory cache.
+    // 完成后再次请求会直接命中内存缓存。
+    const QIcon cached = ThumbnailManager::instance().localIcon(
+        imagePath, info.size(), info.lastModified());
+    QVERIFY(!cached.isNull());
+    QVERIFY(!cached.availableSizes().isEmpty());
 }
 
 // Thumbnails in the modern list are fitted to the row height; width follows

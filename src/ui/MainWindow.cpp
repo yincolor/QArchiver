@@ -100,8 +100,9 @@
 
 #include <limits>
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(QWidget *parent, bool startupContentPending)
     : QMainWindow(parent)
+    , m_startupContentPending(startupContentPending)
 {
     setWindowTitle(tr("QArchiver"));
     setWindowIcon(Icons::modern(QStringLiteral("app-icon.png")));
@@ -185,6 +186,19 @@ MainWindow::MainWindow(QWidget *parent)
         if (archivePath == ArchiveManager::instance().currentPath()) {
             m_model->refreshThumbnail(entryPath);
         }
+    });
+    connect(&ThumbnailManager::instance(),
+            &ThumbnailManager::localThumbnailReady, this,
+            [this](const QString &filePath) {
+        if (!m_localBrowse) {
+            return;
+        }
+        const QFileInfo info(filePath);
+        if (QDir::cleanPath(info.absolutePath())
+            != QDir::cleanPath(m_localBrowseDir)) {
+            return;
+        }
+        m_model->refreshThumbnail(info.fileName());
     });
 
     manager.setSymlinkDecisionCallback(
@@ -281,10 +295,14 @@ void MainWindow::buildUi()
         }
         updateStatusSummary();
     } else {
-        // Start on the welcome page; the file manager is entered explicitly.
-        // 启动时显示欢迎页，只有用户主动点击后才进入文件管理。
+        // Modern starts on the welcome page; classic uses the local browser as
+        // its start page.  If the command line is about to open an archive,
+        // showStartPage() keeps the placeholder instead of scanning disk.
+        // 现代布局显示欢迎页；经典布局以本地文件浏览作为起始页。如果命令行
+        // 马上要打开压缩包，showStartPage() 会保留占位页而不扫描磁盘。
         showStartPage();
     }
+    m_startupContentPending = false;
 
     updateNavLocation();
     updateNavigationState();
@@ -414,18 +432,31 @@ void MainWindow::showWelcomePage()
 
 void MainWindow::showStartPage()
 {
+    if (!m_modernUi) {
+        // The classic layout has no welcome page or File Manager button, so
+        // its start page is the local browser.  Keep the placeholder only for
+        // the first build when the command line is about to open an archive.
+        // 经典布局没有欢迎页与“文件管理”按钮，其起始页就是本地文件浏览。
+        // 仅在首次构建且命令行即将打开压缩包时保留占位页。
+        if (m_startupContentPending) {
+            showPlaceholder(
+                tr("No archive open.\nUse the Open button or drag a file here."));
+            return;
+        }
+        browseLocalDirectory(m_localBrowse
+                                 ? m_localBrowseDir
+                                 : AppSettings::instance().localBrowsePath());
+        return;
+    }
+
     if (m_localBrowse) {
         m_localBrowse = false;
         m_localBrowseDir.clear();
         m_navHistory.clear();
         m_navIndex = -1;
     }
-    if (m_modernUi) {
-        showWelcomePage();
-    } else {
-        showPlaceholder(
-            tr("No archive open.\nUse the Open button or drag a file here."));
-    }
+    m_model->setLocalContext(QString());
+    showWelcomePage();
     // Keep the folder pane visible on the welcome page so its content uses
     // the same centred content area as the archive/file-manager views.
     // Returning from the local file manager must restore the archive sidebar.

@@ -22,6 +22,7 @@
 #include <QLabel>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 
 #include "backends/sevenzip/ZipBackend.h"
 #ifdef QARCHIVER_HAS_LIBARCHIVE
@@ -79,6 +80,7 @@ private slots:
     void cleanupTestCase();
     void init();
 
+    void classicStartPageUsesLocalBrowser();
     void locationBarRefreshesAfterWriteThroughReopen_data();
     void locationBarRefreshesAfterWriteThroughReopen();
 
@@ -127,6 +129,50 @@ void TestNavState::cleanupTestCase()
 void TestNavState::init()
 {
     AppSettings::instance().setUseLibArchiveBackend(true);
+}
+
+// In the classic layout the local browser replaces the modern welcome page.
+// It must open on normal startup, but stay out of the way when the command
+// line already has an archive to open (or a shell task to run).
+// 经典布局用本地文件浏览代替现代欢迎页。正常启动时应直接进入；命令行已带
+// 压缩包（或外壳任务）时则不应抢先扫描本地目录。
+void TestNavState::classicStartPageUsesLocalBrowser()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString savedBrowsePath = AppSettings::instance().localBrowsePath();
+    AppSettings::instance().setLocalBrowsePath(temp.path());
+
+    AppSettings::instance().setUiLayoutMode(QStringLiteral("classic"));
+    {
+        MainWindow window;
+        QVERIFY(window.isBrowsingLocalDirectory());
+    }
+    {
+        // The first build is deferred while a command-line archive/shell task
+        // is pending, so no local directory is scanned yet.
+        // 命令行压缩包/外壳任务未完成时首次构建不扫描本地目录。
+        MainWindow window(nullptr, true);
+        QVERIFY(!window.isBrowsingLocalDirectory());
+    }
+
+    AppSettings::instance().setUiLayoutMode(QStringLiteral("modern"));
+    {
+        MainWindow window;
+        QVERIFY(!window.isBrowsingLocalDirectory());
+
+        // Switching modern -> classic with no archive open enters the local
+        // browser (the classic layout's start page).
+        // 没有打开压缩包时从现代切到经典，进入本地文件浏览（经典起始页）。
+        AppSettings::instance().setUiLayoutMode(QStringLiteral("classic"));
+        window.teardownUi();
+        window.buildUi();
+        QVERIFY(window.isBrowsingLocalDirectory());
+    }
+
+    AppSettings::instance().setLocalBrowsePath(savedBrowsePath);
+    AppSettings::instance().setUiLayoutMode(m_savedLayout);
 }
 
 void TestNavState::locationBarRefreshesAfterWriteThroughReopen_data()

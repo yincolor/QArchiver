@@ -55,6 +55,13 @@ public:
     void setEntries(const QList<ArchiveEntry> &entries);
     void setArchiveContext(const QString &archivePath, ArchiveFormat format,
                            const QString &password);
+    // Local directory entries are real files, not archive members.  Setting a
+    // local context makes DecorationRole read thumbnails directly from disk;
+    // setArchiveContext() clears it again.
+    // 本地目录条目是真实文件而不是压缩包成员。设置本地上下文后，
+    // DecorationRole 会直接从磁盘读取缩略图；setArchiveContext() 会将其清除。
+    void setLocalContext(const QString &directory);
+    QString localContext() const { return m_localDirectory; }
     void refreshThumbnail(const QString &entryPath);
     bool isFlatMode() const { return m_flatMode; }
     void setFlatMode(bool flat);
@@ -107,6 +114,7 @@ private:
     QHash<QString, Node *> m_nodes;
     QList<ArchiveEntry> m_sourceEntries;
     QString m_archivePath;
+    QString m_localDirectory;
     ArchiveFormat m_archiveFormat = ArchiveFormat::Unknown;
     QString m_archivePassword;
     // List-mode directory index: normalized directory -> direct children.

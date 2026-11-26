@@ -157,6 +157,7 @@ void MainWindow::loadLocalDirectory(const QString &path, bool addHistory)
     }
 
     m_model->setArchiveContext(QString(), ArchiveFormat::Unknown, QString());
+    m_model->setLocalContext(directory);
     m_model->setEntries(entries);
     m_model->setFlatMode(true);
     m_navCurrentDir.clear();

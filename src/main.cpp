@@ -78,7 +78,15 @@ int main(int argc, char *argv[])
     const bool dialogOnly = (options.oneClick && !options.archives.isEmpty())
         || !options.compressFormat.isEmpty() || options.compressDialog;
 
-    MainWindow window;
+    // The command line may open an archive or run a shell-integration task as
+    // soon as the event loop starts.  Tell MainWindow before its first UI build
+    // so a classic layout does not scan the local directory in the meantime.
+    // 命令行可能在事件循环启动后立即打开压缩包或执行外壳任务。在首次构建界面
+    // 前告知 MainWindow，避免经典布局在此期间扫描本地目录。
+    const bool startupContentPending = dialogOnly
+        || !options.archives.isEmpty();
+
+    MainWindow window(nullptr, startupContentPending);
     window.setDialogOnly(dialogOnly);
     window.setOpenAfterCompress(options.openAfterCompress);
     if (!dialogOnly) {

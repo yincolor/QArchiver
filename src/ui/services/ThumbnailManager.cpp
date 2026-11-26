@@ -56,6 +56,53 @@ QString thumbnailKey(const QString &archivePath, const QString &entryPath,
                 .toUtf8(),
             QCryptographicHash::Md5).toHex());
 }
+
+QString localThumbnailKey(const QString &filePath, qint64 fileSize,
+                          const QDateTime &modified)
+{
+    return QString::fromLatin1(
+        QCryptographicHash::hash(
+            (QStringLiteral("local|") + filePath + QLatin1Char('|')
+             + QString::number(fileSize) + QLatin1Char('|')
+             + QString::number(modified.toMSecsSinceEpoch()) + QLatin1Char('|')
+             + QString::number(kThumbnailCacheVersion))
+                .toUtf8(),
+            QCryptographicHash::Md5).toHex());
+}
+
+// Render @p sourcePath into the persistent cache.  Shared by archive entries
+// (after extraction) and local files (read directly).
+// 把 @p sourcePath 渲染到持久缓存；压缩包条目（解压后）与本地文件（直接读取）
+// 共用这段逻辑。
+bool writeThumbnail(const QString &sourcePath, const QString &cacheFile)
+{
+    QImageReader reader(sourcePath);
+    reader.setAutoTransform(true);
+    const QSize sourceSize = reader.size();
+    if (sourceSize.isValid()
+        && (sourceSize.width() > kMaxSourceSize
+            || sourceSize.height() > kMaxSourceSize)) {
+        reader.setScaledSize(sourceSize.scaled(
+            kMaxSourceSize, kMaxSourceSize, Qt::KeepAspectRatio));
+    }
+    const QImage image = reader.read();
+    if (image.isNull()) {
+        return false;
+    }
+
+    // Keep the original aspect ratio: fit inside the thumbnail box instead of
+    // cropping/expanding it into a square.
+    // 保持原始比例：缩放至缩略图框内，而不是裁剪成正方形。
+    const QImage thumbnail = image.scaled(
+        kThumbnailSize, kThumbnailSize, Qt::KeepAspectRatio,
+        Qt::SmoothTransformation);
+    const QString temporary = cacheFile + QStringLiteral(".tmp");
+    if (thumbnail.isNull() || !thumbnail.save(temporary, "PNG")) {
+        return false;
+    }
+    QFile::remove(cacheFile);
+    return QFile::rename(temporary, cacheFile);
+}
 } // namespace
 
 ThumbnailManager::ThumbnailManager(QObject *parent)
@@ -101,6 +148,39 @@ QIcon ThumbnailManager::icon(const QString &archivePath, ArchiveFormat format,
         m_pending.insert(key);
         requestThumbnail(key, diskFile, archivePath, entryPath, entrySize,
                          format, password);
+    }
+    return Icons::fileType(QStringLiteral("file-image.png"));
+}
+
+QIcon ThumbnailManager::localIcon(const QString &filePath, qint64 fileSize,
+                                  const QDateTime &modified)
+{
+    if (filePath.isEmpty()) {
+        return Icons::fileType(QStringLiteral("file-image.png"));
+    }
+
+    const QString key = localThumbnailKey(filePath, fileSize, modified);
+    if (const auto it = m_icons.constFind(key); it != m_icons.constEnd()) {
+        return it.value();
+    }
+    if (m_failed.contains(key)) {
+        return Icons::fileType(QStringLiteral("file-image.png"));
+    }
+
+    const QString diskFile = QDir(cacheRoot()).filePath(key
+                                                        + QStringLiteral(".png"));
+    if (QFileInfo::exists(diskFile)) {
+        QPixmap pixmap;
+        if (pixmap.load(diskFile)) {
+            const QIcon icon(pixmap);
+            m_icons.insert(key, icon);
+            return icon;
+        }
+    }
+
+    if (!m_pending.contains(key)) {
+        m_pending.insert(key);
+        requestLocalThumbnail(key, diskFile, filePath);
     }
     return Icons::fileType(QStringLiteral("file-image.png"));
 }
@@ -188,34 +268,7 @@ void ThumbnailManager::requestThumbnail(const QString &key,
                 }
             }
             if (QFileInfo::exists(extracted)) {
-                QImageReader reader(extracted);
-                reader.setAutoTransform(true);
-                const QSize sourceSize = reader.size();
-                if (sourceSize.isValid()
-                    && (sourceSize.width() > kMaxSourceSize
-                        || sourceSize.height() > kMaxSourceSize)) {
-                    reader.setScaledSize(sourceSize.scaled(
-                        kMaxSourceSize, kMaxSourceSize,
-                        Qt::KeepAspectRatio));
-                }
-                const QImage image = reader.read();
-                if (!image.isNull()) {
-                    // Keep the original aspect ratio: fit inside the thumbnail
-                    // box instead of cropping/expanding it into a square.
-                    // 保持原始比例：缩放至缩略图框内，而不是裁剪成正方形。
-                    const QImage thumbnail = image.scaled(
-                        kThumbnailSize, kThumbnailSize,
-                        Qt::KeepAspectRatio,
-                        Qt::SmoothTransformation);
-
-                    const QString temporary = cacheFile
-                        + QStringLiteral(".tmp");
-                    if (!thumbnail.isNull()
-                        && thumbnail.save(temporary, "PNG")) {
-                        QFile::remove(cacheFile);
-                        success = QFile::rename(temporary, cacheFile);
-                    }
-                }
+                success = writeThumbnail(extracted, cacheFile);
             }
         }
         Q_UNUSED(errorMessage);
@@ -229,6 +282,34 @@ void ThumbnailManager::requestThumbnail(const QString &key,
                     if (pixmap.load(cacheFile)) {
                         m_icons.insert(key, QIcon(pixmap));
                         emit thumbnailReady(archivePath, entryPath);
+                    } else {
+                        m_failed.insert(key);
+                    }
+                } else {
+                    m_failed.insert(key);
+                }
+            },
+            Qt::QueuedConnection);
+    });
+}
+
+void ThumbnailManager::requestLocalThumbnail(const QString &key,
+                                             const QString &cacheFile,
+                                             const QString &filePath)
+{
+    m_pool.start([this, key, cacheFile, filePath]() {
+        QDir().mkpath(QFileInfo(cacheFile).absolutePath());
+        const bool success = writeThumbnail(filePath, cacheFile);
+
+        QMetaObject::invokeMethod(
+            this,
+            [this, key, cacheFile, filePath, success]() {
+                m_pending.remove(key);
+                if (success) {
+                    QPixmap pixmap;
+                    if (pixmap.load(cacheFile)) {
+                        m_icons.insert(key, QIcon(pixmap));
+                        emit localThumbnailReady(filePath);
                     } else {
                         m_failed.insert(key);
                     }

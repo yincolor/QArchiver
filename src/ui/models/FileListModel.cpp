@@ -11,6 +11,7 @@
 #include "utils/FileUtils.h"
 
 #include <QApplication>
+#include <QDir>
 #include <QFont>
 #include <QIcon>
 #include <QLocale>
@@ -168,6 +169,11 @@ QVariant FileListModel::data(const QModelIndex &index, int role) const
                               : Icons::aero(QStringLiteral("up.ico"));
             }
             if (shouldShowThumbnail(node)) {
+                if (!m_localDirectory.isEmpty()) {
+                    return ThumbnailManager::instance().localIcon(
+                        QDir(m_localDirectory).filePath(entry.path),
+                        entry.size, entry.mtime);
+                }
                 return ThumbnailManager::instance().icon(
                     m_archivePath, m_archiveFormat, entry.path, entry.size,
                     m_archivePassword);
@@ -294,6 +300,17 @@ void FileListModel::setArchiveContext(const QString &archivePath,
     m_archivePath = archivePath;
     m_archiveFormat = format;
     m_archivePassword = password;
+    setLocalContext(QString());
+}
+
+void FileListModel::setLocalContext(const QString &directory)
+{
+    // Context changes are always followed by setEntries() in the local-browser
+    // flow.  Do not emit dataChanged here: the old rows still refer to the
+    // previous directory and must not request thumbnails from the new one.
+    // 本地浏览流程中上下文变化后总会调用 setEntries()。这里不能发 dataChanged：
+    // 旧行仍属于上一个目录，不能按新目录去请求缩略图。
+    m_localDirectory = directory;
 }
 
 void FileListModel::refreshThumbnail(const QString &entryPath)
@@ -415,7 +432,9 @@ bool FileListModel::shouldShowThumbnail(const Node *node) const
         return false;
     }
     const ArchiveEntry &entry = node->entry;
-    return !entry.isDir && !m_archivePath.isEmpty()
+    const bool hasContext = !m_archivePath.isEmpty()
+        || !m_localDirectory.isEmpty();
+    return !entry.isDir && hasContext
         && FileTypeHelper::kindFor(displayName(node), false)
                == FileTypeHelper::Kind::Image
         && (!entry.isEncrypted || !m_archivePassword.isEmpty());

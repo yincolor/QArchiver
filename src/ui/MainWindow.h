@@ -65,7 +65,13 @@ class TestTitleBar;
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    // @p startupContentPending tells the first UI build that the process was
+    // started with an archive to open (or a shell-integration task), so a
+    // classic layout must not scan the local directory before that work begins.
+    // @p startupContentPending 告知首次构建界面：进程启动时会打开压缩包（或执行
+    // 外壳集成任务），因此经典布局不应在该工作开始前扫描本地目录。
+    explicit MainWindow(QWidget *parent = nullptr,
+                        bool startupContentPending = false);
     ~MainWindow() override;
 
     // Open an archive passed on the command line / 打开命令行传入的压缩包。
@@ -325,6 +331,7 @@ private:
     bool m_openDestAfterExtract = false;
     QString m_lastExtractDest;
     bool m_modernUi = true;
+    bool m_startupContentPending = false;
     bool m_listReady = false;
     QString m_searchText;
     int m_sortColumn = 0;

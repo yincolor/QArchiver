@@ -46,11 +46,15 @@ git push origin 2.4.1
 - Immersive frameless title bar with integrated menus, minimize/maximize/close, drag, double-click maximize and edge/corner resizing; the window starts centred
 - Modern HaoZip-style interface: flat gradient header, large colorful toolbar, folder and details panes,
   Windows 7 style breadcrumb navigation, in-archive search, and an archive status summary
-- Welcome page: drop area, recent files list, Open / One-click Extract entries and a File Manager button; starts on the welcome page
-- Local file manager (opened from the welcome page's File Manager button): navigation, search,
-  grid/list/tree views, double-click to enter a folder or open a file, and right-click compression;
-  the modern layout shows a system-places sidebar (Home, Desktop, Documents, Downloads, Pictures,
-  Music, Videos, File System and user-mounted volumes), while the classic layout does not
+- Start page: the modern layout shows a welcome page with drop area, recent files, Open /
+  One-click Extract entries and a File Manager button; the classic layout has no welcome page and
+  uses the local file browser as its start page when no archive is open
+- Local file manager (opened from the modern welcome page's File Manager button, or entered
+  automatically by the classic layout on startup/layout switch): navigation, search,
+  grid/list/tree views, image thumbnails, double-click to enter a folder or open a file, and
+  right-click compression; the modern layout shows a system-places sidebar (Home, Desktop,
+  Documents, Downloads, Pictures, Music, Videos, File System and user-mounted volumes), while
+  the classic layout does not
 - The navigation bar above the archive list provides grid/list/tree switching on both the welcome and archive pages
 - Sort menu in the context menu and next to the view switcher: name/size/type/modified,
   ascending or descending, remembered across sessions (also applies to the grid view)
@@ -90,10 +94,11 @@ git push origin 2.4.1
   this threshold only controls whether the prompt appears and does not limit the total batch extraction size
 - Icons for common file kinds: images, audio/video, PDF, Office, code, fonts, disk images, e-books, databases, torrents, design files, subtitles, 3D/CAD, packages, and more
 - Native system file dialogs; compression sources ask for files or a folder, then use the native dialog
-- Archive images show real thumbnails (extracted in the background and persistently cached): modern
-  grid/list/tree views all show them, with modern list thumbnails fitted to the row height and a bounded
-  width; the classic layout only shows thumbnails in the grid view, while its list/tree keep the regular
-  image icon. Double-click still opens the system viewer for continuous browsing
+- Images in archives and local folders show real thumbnails (read/extracted in the background and
+  persistently cached): modern grid/list/tree views all show them, with modern list thumbnails fitted
+  to the row height and a bounded width; the classic layout only shows thumbnails in the grid view,
+  while its list/tree keep the regular image icon. Double-click still opens the system viewer for
+  continuous browsing
 - Drag-out: drag selected entries directly to a file manager/desktop to extract them while preserving directory structure
   (extraction happens in the background to a staging directory, cancellable with `Esc`; a second drag of the same selection is zero-latency)
 
