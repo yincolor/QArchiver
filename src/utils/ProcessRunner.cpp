@@ -5,6 +5,7 @@
 #include "utils/ProcessRunner.h"
 
 #include "utils/EncodingDetector.h"
+#include "utils/Logger.h"
 #include "utils/PlatformProcess.h"
 #include "utils/SevenZipTool.h"
 
@@ -14,6 +15,30 @@
 #include <QStandardPaths>
 
 namespace {
+
+// Keep log lines short: at most a few hundred characters of tool output.
+// 控制日志长度：外部工具输出最多保留几百个字符。
+QString summarize(const QString &text, int maxChars = 400)
+{
+    QString flat = text.trimmed();
+    flat.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    flat.replace(QStringLiteral("  "), QStringLiteral(" "));
+    if (flat.size() > maxChars) {
+        flat = flat.left(maxChars) + QStringLiteral("...");
+    }
+    return flat.isEmpty() ? QStringLiteral("(no output)") : flat;
+}
+
+void logCommand(const QString &program, const QStringList &args,
+                const QString &workingDir, int timeoutMs)
+{
+    LOG_DEBUG("ProcessRunner", "run: %s (cwd=%s, timeout=%dms)",
+              ProcessRunner::maskedCommand(program, args).toUtf8().constData(),
+              (workingDir.isEmpty() ? QStringLiteral("<inherit>") : workingDir)
+                  .toUtf8()
+                  .constData(),
+              timeoutMs);
+}
 
 QString decodeLine(const QByteArray &bytes, const QString &encodingHint)
 {
@@ -203,10 +228,18 @@ ProcessResult ProcessRunner::run(const QString &program,
         proc.setWorkingDirectory(workingDir);
     }
 
+    // Log the invocation (password arguments masked) so a failed operation can
+    // be reproduced from app.log alone.
+    // 记录调用（密码参数已脱敏），使失败操作仅凭 app.log 即可复现。
+    logCommand(program, args, workingDir, timeoutMs);
+
     proc.start(program, args);
     if (!proc.waitForStarted(5000)) {
         result.started = false;
         result.stdErr = proc.errorString();
+        LOG_ERROR("ProcessRunner", "%s could not be started: %s",
+                  program.toUtf8().constData(),
+                  proc.errorString().toUtf8().constData());
         return result;
     }
     result.started = true;
@@ -336,5 +369,24 @@ ProcessResult ProcessRunner::run(const QString &program,
 
     result.exitCode = proc.exitCode();
     result.exitStatus = proc.exitStatus();
+
+    const qint64 elapsed = timer.elapsed();
+    if (result.timedOut) {
+        LOG_WARN("ProcessRunner", "%s timed out after %lldms",
+                 program.toUtf8().constData(), static_cast<long long>(elapsed));
+    } else if (result.cancelled) {
+        LOG_INFO("ProcessRunner", "%s cancelled after %lldms",
+                 program.toUtf8().constData(), static_cast<long long>(elapsed));
+    } else if (!result.success()) {
+        LOG_WARN("ProcessRunner",
+                 "%s exited with code %d after %lldms; stderr: %s",
+                 maskedCommand(program, args).toUtf8().constData(),
+                 result.exitCode, static_cast<long long>(elapsed),
+                 summarize(result.stdErr).toUtf8().constData());
+    } else {
+        LOG_DEBUG("ProcessRunner", "%s finished in %lldms",
+                  maskedCommand(program, args).toUtf8().constData(),
+                  static_cast<long long>(elapsed));
+    }
     return result;
 }

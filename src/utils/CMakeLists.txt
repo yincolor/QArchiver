@@ -42,6 +42,11 @@ add_library(qarchiver_utils STATIC
     # 日志。
     Logger.cpp
     Logger.h
+
+    # Abnormal-exit detection: signal logging and session markers.
+    # 异常退出检测：信号日志与会话标记。
+    ExitGuard.cpp
+    ExitGuard.h
 )
 
 # Layering: every consumer includes headers as "utils/Header.h", so the single

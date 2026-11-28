@@ -91,6 +91,18 @@ void ArchiveManager::setSymlinkDecisionCallback(SymlinkDecisionCallback callback
     m_symlinkDecisionCallback = std::move(callback);
 }
 
+void ArchiveManager::reportError(ArchiveErrorCode code, const QString &message)
+{
+    // Errors raised locally (busy manager, missing file, failed preflight, ...)
+    // never pass through handleError(), so log them here before the UI shows
+    // them; otherwise the user's report has no matching log entry.
+    // 本地产生的错误（管理器忙、文件缺失、预检失败等）不经过 handleError()，
+    // 因此在此先记录再交给界面，否则用户反馈在日志中没有对应记录。
+    LOG_WARN("ArchiveManager", "Operation rejected (%s): %s",
+             errorCodeName(code), message.toUtf8().constData());
+    emit errorOccurred(code, message);
+}
+
 
 
 void ArchiveManager::openArchive(const QString &filePath)
@@ -101,25 +113,29 @@ void ArchiveManager::openArchive(const QString &filePath)
 void ArchiveManager::openArchive(const QString &filePath, bool forceCli)
 {
     if (m_operation.busy) {
-        emit errorOccurred(ArchiveErrorCode::Unknown,
-                           tr("Another operation is already in progress"));
+        reportError(ArchiveErrorCode::Unknown,
+                    tr("Another operation is already in progress"));
         return;
     }
 
     const QFileInfo info(filePath);
     if (!info.exists()) {
-        emit errorOccurred(ArchiveErrorCode::FileNotFound,
-                           tr("File does not exist: %1").arg(filePath));
+        reportError(ArchiveErrorCode::FileNotFound,
+                    tr("File does not exist: %1").arg(filePath));
         return;
     }
     if (!info.isReadable()) {
-        emit errorOccurred(ArchiveErrorCode::PermissionDenied,
-                           tr("File is not readable: %1").arg(filePath));
+        reportError(ArchiveErrorCode::PermissionDenied,
+                    tr("File is not readable: %1").arg(filePath));
         return;
     }
 
     ++m_generation;
     const quint64 generation = m_generation;
+
+    LOG_INFO("ArchiveManager", "Opening %s (forceCli=%d)",
+             filePath.toUtf8().constData(), forceCli ? 1 : 0);
+    m_operation.timer.start();
 
     m_openController.begin(filePath, forceCli);
     m_operation.busy = true;
@@ -166,13 +182,16 @@ void ArchiveManager::openArchive(const QString &filePath, bool forceCli)
 void ArchiveManager::finishOpen(const QString &filePath, ArchiveFormat format)
 {
     if (format == ArchiveFormat::Unknown) {
+        LOG_WARN("ArchiveManager", "Could not detect the format of %s (%lld ms)",
+                 filePath.toUtf8().constData(),
+                 static_cast<long long>(m_operation.timer.elapsed()));
         m_openController.abort();
         m_openController.assertInvariants("finishOpen/unknown-format");
         m_operation.busy = false;
         clearWriteAfterReopen();
-        emit errorOccurred(ArchiveErrorCode::UnsupportedFormat,
-                           tr("Unrecognized archive format or file is corrupted: %1")
-                               .arg(filePath));
+        reportError(ArchiveErrorCode::UnsupportedFormat,
+                    tr("Unrecognized archive format or file is corrupted: %1")
+                        .arg(filePath));
         return;
     }
 
@@ -183,15 +202,21 @@ void ArchiveManager::finishOpen(const QString &filePath, ArchiveFormat format)
         m_openController.assertInvariants("finishOpen/no-backend");
         m_operation.busy = false;
         clearWriteAfterReopen();
-        emit errorOccurred(ArchiveErrorCode::UnsupportedFormat,
-                           tr("No backend available for format: %1")
-                               .arg(formatToString(format)));
+        reportError(ArchiveErrorCode::UnsupportedFormat,
+                    tr("No backend available for format: %1")
+                        .arg(formatToString(format)));
         return;
     }
 
     backend->moveToThread(&m_workerThread);
     m_operation.busy = true;
     connectBackend(backend, m_generation);
+
+    LOG_INFO("ArchiveManager", "Detected %s for %s in %lld ms; using %s",
+             formatToString(format).toUtf8().constData(),
+             filePath.toUtf8().constData(),
+             static_cast<long long>(m_operation.timer.elapsed()),
+             backend->metaObject()->className());
 
     const bool invoked = QMetaObject::invokeMethod(
         backend,
@@ -206,8 +231,8 @@ void ArchiveManager::finishOpen(const QString &filePath, ArchiveFormat format)
         if (failed) {
             destroyBackend(failed);
         }
-        emit errorOccurred(ArchiveErrorCode::Unknown,
-                           tr("Failed to open archive: %1").arg(filePath));
+        reportError(ArchiveErrorCode::Unknown,
+                    tr("Failed to open archive: %1").arg(filePath));
         return;
     }
 
@@ -226,12 +251,17 @@ QString ArchiveManager::nameEncoding() const
 void ArchiveManager::listContents(const ListOptions &options)
 {
     if (!m_backend) {
-        emit errorOccurred(ArchiveErrorCode::Unknown, tr("No archive open"));
+        reportError(ArchiveErrorCode::Unknown, tr("No archive open"));
         return;
     }
 
+    m_operation.timer.start();
     m_operation.pending = options;
     m_operation.passwordRetries = 0;
+
+    LOG_DEBUG("ArchiveManager", "Listing %s (password=%d)",
+              m_archivePath.toUtf8().constData(),
+              options.password.isEmpty() ? 0 : 1);
 
     // No encoding hint here on purpose: every backend re-detects the encoding
     // from the archive itself, which is deterministic, while reusing a value
@@ -251,7 +281,7 @@ bool ArchiveManager::validateExtraction(const ExtractOptions &options,
     const ExtractionPreflight::Result result = ExtractionPreflight::check(
         options, m_entries, m_symlinkDecisionCallback);
     if (!result.ok) {
-        emit errorOccurred(result.errorCode, result.errorMessage);
+        reportError(result.errorCode, result.errorMessage);
         return false;
     }
     if (skippedSymlinks) {
@@ -263,7 +293,7 @@ bool ArchiveManager::validateExtraction(const ExtractOptions &options,
 void ArchiveManager::extract(const ExtractOptions &options)
 {
     if (!m_backend) {
-        emit errorOccurred(ArchiveErrorCode::Unknown, tr("No archive open"));
+        reportError(ArchiveErrorCode::Unknown, tr("No archive open"));
         return;
     }
 
@@ -288,10 +318,19 @@ void ArchiveManager::extract(const ExtractOptions &options)
     effective.skippedSymlinks.unite(rejected);
     effective.symlinkPreflightDone = true;
 
+    LOG_INFO("ArchiveManager",
+             "Extracting %d selected entr%s from %s to %s (password=%d)",
+             static_cast<int>(effective.selectedFiles.size()),
+             effective.selectedFiles.size() == 1 ? "y" : "ies",
+             m_archivePath.toUtf8().constData(),
+             effective.destDir.toUtf8().constData(),
+             effective.password.isEmpty() ? 0 : 1);
+    m_operation.timer.start();
+
     if (!QDir().mkpath(effective.destDir)) {
-        emit errorOccurred(ArchiveErrorCode::PermissionDenied,
-                           tr("Cannot create destination directory: %1")
-                               .arg(effective.destDir));
+        reportError(ArchiveErrorCode::PermissionDenied,
+                    tr("Cannot create destination directory: %1")
+                        .arg(effective.destDir));
         return;
     }
 
@@ -328,16 +367,16 @@ void ArchiveManager::startExtractOperation(const ExtractOptions &options)
 void ArchiveManager::compress(const CompressOptions &options, ArchiveFormat format)
 {
     if (m_operation.busy) {
-        emit errorOccurred(ArchiveErrorCode::Unknown,
-                           tr("Another operation is already in progress"));
+        reportError(ArchiveErrorCode::Unknown,
+                    tr("Another operation is already in progress"));
         return;
     }
     if (options.archivePath.trimmed().isEmpty()) {
-        emit errorOccurred(ArchiveErrorCode::Unknown, tr("No archive name specified"));
+        reportError(ArchiveErrorCode::Unknown, tr("No archive name specified"));
         return;
     }
     if (options.sourceFiles.isEmpty()) {
-        emit errorOccurred(ArchiveErrorCode::Unknown, tr("No source files selected"));
+        reportError(ArchiveErrorCode::Unknown, tr("No source files selected"));
         return;
     }
 
@@ -345,9 +384,9 @@ void ArchiveManager::compress(const CompressOptions &options, ArchiveFormat form
 
     ArchiveBackend *backend = ArchiveBackendFactory::create(format);
     if (!backend) {
-        emit errorOccurred(ArchiveErrorCode::UnsupportedFormat,
-                           tr("No backend available for format: %1")
-                               .arg(formatToString(format)));
+        reportError(ArchiveErrorCode::UnsupportedFormat,
+                    tr("No backend available for format: %1")
+                        .arg(formatToString(format)));
         return;
     }
 
@@ -357,11 +396,18 @@ void ArchiveManager::compress(const CompressOptions &options, ArchiveFormat form
 
     m_compressFinalPath = QFileInfo(options.archivePath).absoluteFilePath();
     m_compressFormat = format;
+    m_operation.timer.start();
+
+    LOG_INFO("ArchiveManager", "Compressing %d source%s to %s as %s",
+             static_cast<int>(options.sourceFiles.size()),
+             options.sourceFiles.size() == 1 ? "" : "s",
+             m_compressFinalPath.toUtf8().constData(),
+             formatToString(format).toUtf8().constData());
     const QFileInfo finalInfo(m_compressFinalPath);
     if (!QDir().mkpath(finalInfo.absolutePath())) {
-        emit errorOccurred(ArchiveErrorCode::PermissionDenied,
-                           tr("Cannot create target directory: %1")
-                               .arg(finalInfo.absolutePath()));
+        reportError(ArchiveErrorCode::PermissionDenied,
+                    tr("Cannot create target directory: %1")
+                        .arg(finalInfo.absolutePath()));
         cleanupTempBackend();
         cleanupCompressSession();
         return;
@@ -376,8 +422,8 @@ void ArchiveManager::compress(const CompressOptions &options, ArchiveFormat form
             QDir(finalInfo.absolutePath())
                 .filePath(QStringLiteral(".qarchiver_compress_XXXXXX")));
         if (!m_compressTempDir->isValid()) {
-            emit errorOccurred(ArchiveErrorCode::PermissionDenied,
-                               tr("Cannot create a temporary directory next to the target"));
+            reportError(ArchiveErrorCode::PermissionDenied,
+                        tr("Cannot create a temporary directory next to the target"));
             cleanupTempBackend();
             cleanupCompressSession();
             return;
@@ -396,8 +442,8 @@ void ArchiveManager::compress(const CompressOptions &options, ArchiveFormat form
 
     if (!invoked) {
         m_operation.busy = false;
-        emit errorOccurred(ArchiveErrorCode::Unknown,
-                           tr("Failed to dispatch the compression operation"));
+        reportError(ArchiveErrorCode::Unknown,
+                    tr("Failed to dispatch the compression operation"));
         cleanupTempBackend();
         cleanupCompressSession();
     }
@@ -406,7 +452,7 @@ void ArchiveManager::compress(const CompressOptions &options, ArchiveFormat form
 void ArchiveManager::addFiles(const AddFilesOptions &options)
 {
     if (!m_backend) {
-        emit errorOccurred(ArchiveErrorCode::Unknown, tr("No archive open"));
+        reportError(ArchiveErrorCode::Unknown, tr("No archive open"));
         return;
     }
     if (!m_backend->supportsAppend()) {
@@ -418,8 +464,8 @@ void ArchiveManager::addFiles(const AddFilesOptions &options)
             openArchive(m_archivePath, true);
             return;
         }
-        emit errorOccurred(ArchiveErrorCode::OperationNotSupported,
-                           tr("This archive does not support adding files"));
+        reportError(ArchiveErrorCode::OperationNotSupported,
+                    tr("This archive does not support adding files"));
         return;
     }
 
@@ -436,7 +482,7 @@ void ArchiveManager::addFiles(const AddFilesOptions &options)
 void ArchiveManager::deleteFiles(const DeleteFilesOptions &options)
 {
     if (!m_backend) {
-        emit errorOccurred(ArchiveErrorCode::Unknown, tr("No archive open"));
+        reportError(ArchiveErrorCode::Unknown, tr("No archive open"));
         return;
     }
     if (!m_backend->supportsAppend()) {
@@ -448,8 +494,8 @@ void ArchiveManager::deleteFiles(const DeleteFilesOptions &options)
             openArchive(m_archivePath, true);
             return;
         }
-        emit errorOccurred(ArchiveErrorCode::OperationNotSupported,
-                           tr("This archive does not support deleting files"));
+        reportError(ArchiveErrorCode::OperationNotSupported,
+                    tr("This archive does not support deleting files"));
         return;
     }
 
@@ -466,7 +512,7 @@ void ArchiveManager::deleteFiles(const DeleteFilesOptions &options)
 void ArchiveManager::testArchive(const TestOptions &options)
 {
     if (!m_backend) {
-        emit errorOccurred(ArchiveErrorCode::Unknown, tr("No archive open"));
+        reportError(ArchiveErrorCode::Unknown, tr("No archive open"));
         return;
     }
 
@@ -490,8 +536,8 @@ void ArchiveManager::retryWithPassword(const QString &password)
         clearPendingState();
         m_operation.preTestPending = false;
         m_operation.preTestOptions = ExtractOptions{};
-        emit errorOccurred(ArchiveErrorCode::WrongPassword,
-                           tr("Too many failed password attempts."));
+        reportError(ArchiveErrorCode::WrongPassword,
+                    tr("Too many failed password attempts."));
         return;
     }
 
@@ -565,6 +611,10 @@ void ArchiveManager::retryWithPassword(const QString &password)
 
 void ArchiveManager::cancelCurrentOperation()
 {
+    if (m_operation.busy || m_tempBackend || m_openController.isOpening()) {
+        LOG_INFO("ArchiveManager", "Cancellation requested for %s",
+                 m_archivePath.toUtf8().constData());
+    }
     if (m_backend) {
         m_backend->requestCancel();
     }
@@ -615,6 +665,13 @@ void ArchiveManager::clearWriteAfterReopen()
 
 void ArchiveManager::closeArchive()
 {
+    const QString closingPath = m_archivePath;
+    const int closingEntries = static_cast<int>(m_entries.size());
+    if (!closingPath.isEmpty()) {
+        LOG_INFO("ArchiveManager", "Closing %s (%d entries cached)",
+                 closingPath.toUtf8().constData(), closingEntries);
+    }
+
     ++m_generation;
     m_operation.busy = false;
     m_nameEncoding.clear();

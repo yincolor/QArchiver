@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QStandardPaths>
@@ -15,6 +16,7 @@
 #include "app/Translations.h"
 #include "ui/MainWindow.h"
 #include "ui/theme/ThemeManager.h"
+#include "utils/ExitGuard.h"
 #include "utils/FileAssociations.h"
 #include "utils/Logger.h"
 
@@ -42,10 +44,43 @@ int main(int argc, char *argv[])
     // 日志文件位置：<cache>/QArchiver/app.log
     const QString logDir =
         QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    Logger::instance().setLogFile(QDir(logDir).filePath(QStringLiteral("app.log")));
-    LOG_INFO("main", "QArchiver starting");
+    const QString logFilePath =
+        QDir(logDir).filePath(QStringLiteral("app.log"));
+    Logger::instance().setLogFile(logFilePath);
+    // Signal handlers append a final line before the process dies; the session
+    // marker set below catches deaths no handler can report (SIGKILL, OOM).
+    // 信号处理会在进程死亡前追加最后一行；下面的会话标记可捕获信号处理无法
+    // 报告的死亡（SIGKILL、OOM）。
+    ExitGuard::install(logFilePath);
+    LOG_INFO("main", "QArchiver starting (pid %lld)",
+             static_cast<long long>(QCoreApplication::applicationPid()));
+    LOG_INFO("main", "Version %s, Qt %s, platform %s, locale %s",
+             QCoreApplication::applicationVersion().toUtf8().constData(),
+             qVersion(), QGuiApplication::platformName().toUtf8().constData(),
+             QLocale::system().name().toUtf8().constData());
+    LOG_INFO("main", "Log file %s (level %s; override with QARCHIVER_LOG_LEVEL="
+                      "debug|info|warning|error)",
+             Logger::instance().logFilePath().toUtf8().constData(),
+             Logger::instance().levelName());
 
     const CommandLine::Options options = CommandLine::parse(app);
+    LOG_DEBUG("main",
+              "Arguments: archives=%d oneClick=%d compressFormat=%s "
+              "compressDialog=%d openAfter=%d preferences=%d benchmark=%d",
+              static_cast<int>(options.archives.size()), options.oneClick ? 1 : 0,
+              options.compressFormat.toUtf8().constData(),
+              options.compressDialog ? 1 : 0, options.openAfterCompress ? 1 : 0,
+              options.preferences ? 1 : 0, options.benchmark ? 1 : 0);
+
+    // From here on every exit path removes the session marker; a killed or
+    // crashed run leaves it behind and is reported by the next start.
+    // 从这里开始所有退出路径都会移除会话标记；被杀或崩溃的运行会遗留标记，
+    // 由下次启动报告。
+    ExitGuard::beginSession();
+    struct SessionMarkerGuard {
+        ~SessionMarkerGuard() { ExitGuard::endSession(); }
+    };
+    SessionMarkerGuard sessionMarkerGuard;
 
     // Install the UI language before any string is created; QLocale defaults
     // follow the applied catalog so sizes and standard dialogs match.
@@ -88,12 +123,16 @@ int main(int argc, char *argv[])
     const bool startupContentPending = dialogOnly
         || !options.archives.isEmpty();
 
+    QElapsedTimer startupTimer;
+    startupTimer.start();
     MainWindow window(nullptr, startupContentPending);
     window.setDialogOnly(dialogOnly);
     window.setOpenAfterCompress(options.openAfterCompress);
     if (!dialogOnly) {
         window.show();
     }
+    LOG_DEBUG("main", "Main window ready (%lld ms after startup)",
+              static_cast<long long>(startupTimer.elapsed()));
 
     // Compress from the Explorer context menu / a script: no dialog, the
     // archive is created next to the sources and the window closes afterwards.

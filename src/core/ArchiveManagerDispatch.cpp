@@ -164,6 +164,10 @@ void ArchiveManager::connectBackend(ArchiveBackend *backend, quint64 generation)
                     m_operation.busy = false;
                     m_operation.pending = std::monostate{};
                     m_operation.passwordRetries = 0;
+                    LOG_DEBUG("ArchiveManager", "Listed %d entries from %s in %lld ms",
+                              static_cast<int>(entries.size()),
+                              m_archivePath.toUtf8().constData(),
+                              static_cast<long long>(m_operation.timer.elapsed()));
                     emit fileListReady(entries);
                 }
             });
@@ -240,6 +244,22 @@ void ArchiveManager::connectTempBackend(ArchiveBackend *backend)
 void ArchiveManager::handleTerminal(ArchiveBackend *backend, bool success,
                                     const QString &msg)
 {
+    if (success) {
+        LOG_DEBUG("ArchiveManager", "%s reported success in %lld ms: %s",
+                  backend ? backend->metaObject()->className() : "(null backend)",
+                  static_cast<long long>(m_operation.timer.elapsed()),
+                  msg.toUtf8().constData());
+    } else {
+        // Failures reported through operationFinished() bypass handleError(),
+        // so they must be logged here to stay visible at the default level.
+        // 通过 operationFinished() 报告的失败不经过 handleError()，
+        // 因此需要在此记录，才能在默认级别下可见。
+        LOG_WARN("ArchiveManager", "%s reported failure in %lld ms: %s",
+                 backend ? backend->metaObject()->className() : "(null backend)",
+                 static_cast<long long>(m_operation.timer.elapsed()),
+                 msg.toUtf8().constData());
+    }
+
     m_operation.busy = false;
 
     if (backend == m_tempBackend) {
@@ -389,6 +409,13 @@ bool ArchiveManager::tryLibArchiveFallback(ArchiveBackend *backend,
 void ArchiveManager::handleError(ArchiveBackend *backend, ArchiveErrorCode code,
                                  const QString &msg)
 {
+    LOG_WARN("ArchiveManager", "%s failed on %s (%s, %lld ms): %s",
+             m_archivePath.toUtf8().constData(),
+             backend ? backend->metaObject()->className() : "(null backend)",
+             errorCodeName(code),
+             static_cast<long long>(m_operation.timer.elapsed()),
+             msg.toUtf8().constData());
+
     if (tryLibArchiveFallback(backend, code, msg)) {
         return;
     }

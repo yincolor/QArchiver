@@ -5,6 +5,7 @@
 // Central controller that schedules archive operations on a worker thread.
 // 在工作线程中调度压缩包操作的核心控制器。
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QSet>
 #include <QThread>
@@ -139,6 +140,11 @@ private:
     void connectTempBackend(ArchiveBackend *backend);
 
     void destroyBackend(ArchiveBackend *backend);
+    // Single exit for locally rejected/failed operations: logs the reason and
+    // then emits errorOccurred(), so no failure path stays invisible in app.log.
+    // 本地拒绝/失败操作的统一出口：先记录原因再发出 errorOccurred()，
+    // 确保没有任何失败路径在 app.log 中隐形。
+    void reportError(ArchiveErrorCode code, const QString &message);
     void clearPendingState();
     void finishOpen(const QString &filePath, ArchiveFormat format);
     void startExtractOperation(const ExtractOptions &options);
@@ -194,6 +200,10 @@ private:
         bool busy = false;
         bool preTestPending = false;
         int passwordRetries = 0;
+        // Measures the currently running open/list/extract/compress operation for
+        // the timing information written to app.log.
+        // 测量当前打开/列表/解压/压缩操作的耗时，用于写入 app.log 的计时信息。
+        QElapsedTimer timer;
         std::variant<std::monostate, ListOptions, ExtractOptions, TestOptions,
                      AddFilesOptions, DeleteFilesOptions> pending;
         ExtractOptions preTestOptions;

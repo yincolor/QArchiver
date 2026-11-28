@@ -29,6 +29,31 @@ enum class ArchiveErrorCode {
     Cancelled,              // User cancelled
 };
 
+// Stable, human-readable name for logs and diagnostics.
+// 供日志与诊断使用的稳定可读名称。
+inline const char *errorCodeName(ArchiveErrorCode code)
+{
+    switch (code) {
+    case ArchiveErrorCode::Unknown:                return "Unknown";
+    case ArchiveErrorCode::OperationNotSupported:  return "OperationNotSupported";
+    case ArchiveErrorCode::UnsupportedFormat:      return "UnsupportedFormat";
+    case ArchiveErrorCode::PasswordRequired:       return "PasswordRequired";
+    case ArchiveErrorCode::WrongPassword:          return "WrongPassword";
+    case ArchiveErrorCode::CorruptedArchive:       return "CorruptedArchive";
+    case ArchiveErrorCode::InsufficientDiskSpace:  return "InsufficientDiskSpace";
+    case ArchiveErrorCode::PathTraversalBlocked:   return "PathTraversalBlocked";
+    case ArchiveErrorCode::VolumeMissing:          return "VolumeMissing";
+    case ArchiveErrorCode::ToolNotFound:           return "ToolNotFound";
+    case ArchiveErrorCode::FileNotFound:           return "FileNotFound";
+    case ArchiveErrorCode::PermissionDenied:       return "PermissionDenied";
+    case ArchiveErrorCode::EncodingError:          return "EncodingError";
+    case ArchiveErrorCode::PartialExtraction:      return "PartialExtraction";
+    case ArchiveErrorCode::HardLinkUnsupported:    return "HardLinkUnsupported";
+    case ArchiveErrorCode::Cancelled:              return "Cancelled";
+    }
+    return "Unknown";
+}
+
 Q_DECLARE_METATYPE(ArchiveErrorCode)
 
 #endif // ARCHIVEERROR_H

@@ -6,6 +6,7 @@
 
 #include <QDir>
 #include <QDirIterator>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
@@ -113,11 +114,19 @@ void StreamBackend::listContents(const ListOptions &)
         return;
     }
 
+    QElapsedTimer timer;
+    timer.start();
     m_entry.path = inferInternalName();
     const qint64 size = queryUncompressedSize();
     if (size >= 0) {
         m_entry.size = size;
     }
+    LOG_INFO("StreamBackend",
+             "Listed %s from %s (stored size %lld, %lld ms)",
+             m_entry.path.toUtf8().constData(),
+             m_archivePath.toUtf8().constData(),
+             static_cast<long long>(m_entry.size),
+             static_cast<long long>(timer.elapsed()));
     emit fileListReady({m_entry});
 }
 

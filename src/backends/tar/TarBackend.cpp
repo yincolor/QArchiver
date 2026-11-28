@@ -7,6 +7,7 @@
 #include "backends/ExtractionUtils.h"
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
@@ -238,9 +239,17 @@ void TarBackend::listContents(const ListOptions &options)
 
     const QString sevenZip = SevenZipUtils::resolveSevenZip();
     if (sevenZip.isEmpty()) {
+        LOG_ERROR("TarBackend", "Cannot list %s: 7z tool not found",
+                  m_archivePath.toUtf8().constData());
         emit errorOccurred(ArchiveErrorCode::ToolNotFound, tr("7z tool not found"));
         return;
     }
+
+    QElapsedTimer timer;
+    timer.start();
+    LOG_DEBUG("TarBackend", "Listing %s with %s",
+              m_archivePath.toUtf8().constData(),
+              sevenZip.toUtf8().constData());
 
     QString target = m_archivePath;
     if (isCompressed()) {
@@ -252,6 +261,9 @@ void TarBackend::listContents(const ListOptions &options)
             return;
         }
         if (innerResult == InnerTarResult::Failed) {
+            LOG_DEBUG("TarBackend", "Cannot open compressed stream %s: %s",
+                     m_archivePath.toUtf8().constData(),
+                     errorText.toUtf8().constData());
             emit errorOccurred(ExtractionUtils::looksLikeCorruption(errorText)
                                    ? ArchiveErrorCode::CorruptedArchive
                                    : ArchiveErrorCode::Unknown,
@@ -293,6 +305,9 @@ void TarBackend::listContents(const ListOptions &options)
     }
     if (!result.success()) {
         const QString errorText = result.stdErr.trimmed();
+        LOG_DEBUG("TarBackend", "Listing %s failed (exit %d): %s",
+                 m_archivePath.toUtf8().constData(), result.exitCode,
+                 errorText.toUtf8().constData());
         emit errorOccurred(ExtractionUtils::looksLikeCorruption(errorText)
                                ? ArchiveErrorCode::CorruptedArchive
                                : ArchiveErrorCode::Unknown,
@@ -306,6 +321,18 @@ void TarBackend::listContents(const ListOptions &options)
     const QByteArray nameSample = SevenZipUtils::sampleNameBytes(result.stdOutRaw);
     m_nameEncoding = nameSample.isEmpty() ? QStringLiteral("UTF-8")
                                           : EncodingDetector::detect(nameSample);
+    LOG_INFO("TarBackend", "Listed %d entries from %s (name encoding %s, %lld ms)",
+             static_cast<int>(m_entries.size()),
+             m_archivePath.toUtf8().constData(),
+             m_nameEncoding.toUtf8().constData(),
+             static_cast<long long>(timer.elapsed()));
+    if (!nameSample.isEmpty()
+        && m_nameEncoding.compare(QStringLiteral("UTF-8"), Qt::CaseInsensitive) != 0) {
+        LOG_WARN("TarBackend",
+                 "%s uses non-UTF-8 member names; decoded as %s",
+                 m_archivePath.toUtf8().constData(),
+                 m_nameEncoding.toUtf8().constData());
+    }
     emit fileListReady(m_entries);
 }
 

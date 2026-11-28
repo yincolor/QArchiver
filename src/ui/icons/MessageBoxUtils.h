@@ -18,6 +18,18 @@ inline void showWarning(QWidget *parent, const QString &title,
                         const QString &text,
                         const QString &informativeText = QString())
 {
+    // Record user-visible warnings: a report often only describes the dialog
+    // that was shown, so app.log must contain its text.
+    // 记录用户可见的警告：用户反馈通常只描述弹窗内容，app.log 必须包含它。
+    if (informativeText.isEmpty()) {
+        LOG_WARN("MessageBox", "%s: %s", title.toUtf8().constData(),
+                 text.toUtf8().constData());
+    } else {
+        LOG_WARN("MessageBox", "%s: %s | %s", title.toUtf8().constData(),
+                 text.toUtf8().constData(),
+                 informativeText.toUtf8().constData());
+    }
+
     QMessageBox box(parent);
     box.setWindowTitle(title);
     box.setIconPixmap(Icons::aero(QStringLiteral("warning.ico")).pixmap(32, 32));

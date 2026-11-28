@@ -152,6 +152,13 @@ void PreviewManager::preview(const QString &archivePath, ArchiveFormat format,
 
     const QString destPath = QDir(previewDir).filePath(normalized);
 
+    LOG_DEBUG("PreviewManager",
+             "Preview %s from %s (format %s, %d sibling path(s), openWith=%d, password=%d)",
+             entryPath.toUtf8().constData(), archivePath.toUtf8().constData(),
+             formatToString(format).toUtf8().constData(),
+             static_cast<int>(imagePaths.size()), openWith ? 1 : 0,
+             password.isEmpty() ? 0 : 1);
+
     // Extract the clicked image together with its same-directory image
     // siblings.  Drag-out/extraction already preserves paths, so the system
     // viewer can browse the containing folder and switch images.
@@ -273,17 +280,26 @@ void PreviewManager::preview(const QString &archivePath, ArchiveFormat format,
 
         bool success = false;
         bool cancelled = false;
+        bool opened = false;
         QString errorMessage;
 
         if (cancel->load(std::memory_order_relaxed)) {
             cancelled = true;
             errorMessage = QObject::tr("Cancelled");
         } else if (backend) {
+            LOG_DEBUG("PreviewManager", "Preview of %s uses backend %s",
+                      archivePath.toUtf8().constData(),
+                      backend->metaObject()->className());
             job->backend.store(backend.get(), std::memory_order_relaxed);
             if (cancel->load(std::memory_order_relaxed)) {
                 backend->requestCancel();
             }
 
+            QObject::connect(
+                backend.get(), &ArchiveBackend::archiveOpened,
+                backend.get(),
+                [&opened](const QString &) { opened = true; },
+                Qt::DirectConnection);
             QObject::connect(
                 backend.get(), &ArchiveBackend::operationFinished,
                 backend.get(),
@@ -325,11 +341,34 @@ void PreviewManager::preview(const QString &archivePath, ArchiveFormat format,
             options.preservePaths = true;
             options.password = password;
 
-            backend->extract(options);
+            if (!opened) {
+                // Without a successful open the extraction would only repeat
+                // the same failure; keep the open error as the visible reason.
+                // 未成功打开时再解压只会重复同一个失败；保留打开阶段的错误作为原因。
+                LOG_WARN("PreviewManager",
+                         "Preview backend could not open %s; extraction skipped: %s",
+                         archivePath.toUtf8().constData(),
+                         errorMessage.toUtf8().constData());
+                if (errorMessage.isEmpty()) {
+                    errorMessage = QObject::tr("Could not open the archive for preview");
+                }
+            } else {
+                backend->extract(options);
+            }
             backend->closeArchive();
             job->backend.store(nullptr, std::memory_order_relaxed);
         } else {
             errorMessage = QObject::tr("No backend available for preview");
+        }
+
+        if (!success && !cancelled && errorMessage.isEmpty()) {
+            // A backend reported failure without a message; make that explicit
+            // instead of showing an empty error dialog.
+            // 后端报告失败却未给出消息；显式说明，避免弹出空错误对话框。
+            LOG_WARN("PreviewManager",
+                     "Preview extraction of %s returned no error detail",
+                     archivePath.toUtf8().constData());
+            errorMessage = QObject::tr("The backend reported a failure without details");
         }
 
         cancelled = cancelled || cancel->load(std::memory_order_relaxed);
@@ -385,6 +424,11 @@ void PreviewManager::finishPreview(const QString &previewDir,
     }
     job->finished = true;
     job->cancelled = job->cancelled || cancelled;
+
+    LOG_DEBUG("PreviewManager",
+              "Preview for %s finished: success=%d cancelled=%d dest=%s",
+              previewDir.toUtf8().constData(), success ? 1 : 0,
+              job->cancelled ? 1 : 0, destPath.toUtf8().constData());
     const bool openWith = job->openWith;
     const QString archivePath = job->archivePath;
     const QString password = job->password;

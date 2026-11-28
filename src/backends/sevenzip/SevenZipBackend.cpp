@@ -7,6 +7,7 @@
 #include "backends/ExtractionUtils.h"
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 
@@ -126,9 +127,19 @@ void SevenZipBackend::listContents(const ListOptions &options)
 
     const QString sevenZip = sevenZipPath();
     if (sevenZip.isEmpty()) {
+        LOG_ERROR("SevenZipBackend", "Cannot list %s: 7z tool not found",
+                  m_archivePath.toUtf8().constData());
         emit errorOccurred(ArchiveErrorCode::ToolNotFound, tr("7z tool not found"));
         return;
     }
+
+    QElapsedTimer timer;
+    timer.start();
+    LOG_DEBUG("SevenZipBackend", "Listing %s with %s (format %s, password=%d)",
+              m_archivePath.toUtf8().constData(),
+              sevenZip.toUtf8().constData(),
+              formatToString(format()).toUtf8().constData(),
+              options.password.isEmpty() ? 0 : 1);
 
     QStringList args;
     args << QStringLiteral("l") << QStringLiteral("-slt")
@@ -183,13 +194,20 @@ void SevenZipBackend::listContents(const ListOptions &options)
         if (looksLikePassword) {
             m_encrypted = true;
             if (options.password.isEmpty()) {
+                LOG_INFO("SevenZipBackend", "%s needs a password to list",
+                         m_archivePath.toUtf8().constData());
                 emit passwordRequested();
                 return;
             }
+            LOG_WARN("SevenZipBackend", "Wrong password for %s",
+                     m_archivePath.toUtf8().constData());
             emit errorOccurred(ArchiveErrorCode::WrongPassword, tr("Wrong password"));
             return;
         }
 
+        LOG_DEBUG("SevenZipBackend", "Listing %s failed (exit %d): %s",
+                 m_archivePath.toUtf8().constData(), result.exitCode,
+                 result.stdErr.trimmed().toUtf8().constData());
         emit errorOccurred(ArchiveErrorCode::Unknown,
                            tr("List failed: %1").arg(errorText.trimmed()));
         return;
@@ -203,6 +221,21 @@ void SevenZipBackend::listContents(const ListOptions &options)
     const QByteArray nameSample = SevenZipUtils::sampleNameBytes(result.stdOutRaw);
     m_nameEncoding = nameSample.isEmpty() ? QStringLiteral("UTF-8")
                                           : EncodingDetector::detect(nameSample);
+    LOG_INFO("SevenZipBackend", "Listed %d entries from %s (name encoding %s, %lld ms)",
+             static_cast<int>(m_entries.size()),
+             m_archivePath.toUtf8().constData(),
+             m_nameEncoding.toUtf8().constData(),
+             static_cast<long long>(timer.elapsed()));
+    if (!nameSample.isEmpty()
+        && m_nameEncoding.compare(QStringLiteral("UTF-8"), Qt::CaseInsensitive) != 0) {
+        // Legacy code page: report it explicitly, since mojibake reports hinge
+        // on whether the archive or the decoding was wrong.
+        // 旧式代码页：显式记录，乱码问题需区分压缩包本身还是解码造成的。
+        LOG_WARN("SevenZipBackend",
+                 "%s uses non-UTF-8 member names; decoded as %s",
+                 m_archivePath.toUtf8().constData(),
+                 m_nameEncoding.toUtf8().constData());
+    }
     m_encrypted = std::any_of(m_entries.cbegin(), m_entries.cend(),
                               [](const ArchiveEntry &entry) { return entry.isEncrypted; });
     emit fileListReady(m_entries);

@@ -264,6 +264,8 @@ void LibArchiveBackend::reportFailure(const QString &message,
 
     if (needsPassword || wrongPassword) {
         if (password.isEmpty()) {
+            LOG_INFO("LibArchiveBackend", "%s needs a password (%s)",
+                     m_archivePath.toUtf8().constData(), context.toUtf8().constData());
             emit passwordRequested();
             return;
         }
@@ -287,7 +289,7 @@ void LibArchiveBackend::reportFailure(const QString &message,
         return;
     }
 
-    LOG_INFO("LibArchiveBackend", "%s failed: %s", context.toUtf8().constData(),
+    LOG_DEBUG("LibArchiveBackend", "%s failed: %s", context.toUtf8().constData(),
              message.toUtf8().constData());
     emit errorOccurred(ArchiveErrorCode::CorruptedArchive,
                        tr("%1: %2").arg(context, message));
@@ -370,6 +372,12 @@ void LibArchiveBackend::listContents(const ListOptions &options)
 
     // An explicit hint from the caller (user preference) wins over detection.
     // 调用方显式给出的提示（用户偏好）优先于自动检测。
+    int rawNameCount = 0;
+    for (const PendingEntry &pendingEntry : pending) {
+        if (!pendingEntry.rawPath.isEmpty()) {
+            ++rawNameCount;
+        }
+    }
     if (!options.encodingHint.isEmpty()) {
         m_nameEncoding = options.encodingHint;
     } else {
@@ -423,6 +431,29 @@ void LibArchiveBackend::listContents(const ListOptions &options)
     LOG_INFO("LibArchiveBackend", "Listed %d entries from %s (name encoding %s)",
              static_cast<int>(entries.size()), m_archivePath.toUtf8().constData(),
              m_nameEncoding.toUtf8().constData());
+    if (rawNameCount > 0) {
+        // libarchive could not provide UTF-8 names, so the names were decoded
+        // from raw bytes.  Record how many entries were affected: mojibake
+        // reports need to know whether the archive or the decoding was wrong.
+        // libarchive 未能给出 UTF-8 名称，名称由原始字节解码而来。记录受影响
+        // 的条目数：乱码问题需要区分压缩包本身还是解码造成的。
+        LOG_DEBUG("LibArchiveBackend",
+                  "%d of %d entries had non-UTF-8 names; hint=%s",
+                  rawNameCount, static_cast<int>(entries.size()),
+                  options.encodingHint.toUtf8().constData());
+        if (m_nameEncoding.compare(QStringLiteral("UTF-8"), Qt::CaseInsensitive) != 0
+            && options.encodingHint.isEmpty()) {
+            LOG_WARN("LibArchiveBackend",
+                     "%s uses non-UTF-8 member names; decoded as %s",
+                     m_archivePath.toUtf8().constData(),
+                     m_nameEncoding.toUtf8().constData());
+        }
+    }
+    if (entries.isEmpty()) {
+        LOG_WARN("LibArchiveBackend", "%s listed no entries (format %s)",
+                 m_archivePath.toUtf8().constData(),
+                 formatToString(m_format).toUtf8().constData());
+    }
     emit fileListReady(entries);
 }
 

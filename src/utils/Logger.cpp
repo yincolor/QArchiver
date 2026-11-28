@@ -10,6 +10,51 @@
 #include <QStandardPaths>
 #include <QFileInfo>
 
+#include <cstdlib>
+
+namespace {
+
+// Forward Qt's own messages (qDebug/qWarning/qCritical) into the same sink so
+// library and QPA warnings end up in app.log instead of only on stderr.
+// 把 Qt 自身的消息（qDebug/qWarning/qCritical）导入同一日志出口，
+// 使 Qt 与 QPA 的警告也写入 app.log，而不是只出现在标准错误。
+void qtMessageHandler(QtMsgType type, const QMessageLogContext &context,
+                      const QString &message)
+{
+    Logger::Level level = Logger::Info;
+    switch (type) {
+    case QtDebugMsg:    level = Logger::Debug;   break;
+    case QtInfoMsg:     level = Logger::Info;    break;
+    case QtWarningMsg:  level = Logger::Warning; break;
+    case QtCriticalMsg: level = Logger::Error;   break;
+    case QtFatalMsg:    level = Logger::Error;   break;
+    }
+
+    QString tag = (context.category && *context.category)
+        ? QString::fromLatin1(context.category)
+        : QStringLiteral("Qt");
+    if (tag == QLatin1String("default")) {
+        tag = QStringLiteral("Qt");
+    }
+
+    QString text = message;
+    if (level == Logger::Debug && context.file && *context.file) {
+        // Source location is only useful while debugging.
+        // 仅在调试时附加源文件位置。
+        text += QStringLiteral(" (%1:%2)")
+                    .arg(QString::fromUtf8(context.file))
+                    .arg(context.line);
+    }
+
+    Logger::instance().log(level, tag, text);
+
+    if (type == QtFatalMsg) {
+        std::abort();
+    }
+}
+
+} // namespace
+
 Logger::Logger()
 {
     // Enable debug logging via QARCHIVER_DEBUG=1.  SAM_DEBUG is kept as a
@@ -18,6 +63,28 @@ Logger::Logger()
     if (qEnvironmentVariableIsSet("QARCHIVER_DEBUG")
         || qEnvironmentVariableIsSet("SAM_DEBUG")) {
         m_minLevel = Debug;
+    }
+
+    // QARCHIVER_LOG_LEVEL=debug|info|warning|error overrides the default
+    // level without enabling the full debug stream.
+    // QARCHIVER_LOG_LEVEL=debug|info|warning|error 可覆盖默认级别，
+    // 无需全局开启调试输出。
+    const QString level =
+        qEnvironmentVariable("QARCHIVER_LOG_LEVEL").trimmed().toLower();
+    if (level == QLatin1String("debug")) {
+        m_minLevel = Debug;
+    } else if (level == QLatin1String("info")) {
+        m_minLevel = Info;
+    } else if (level == QLatin1String("warning") || level == QLatin1String("warn")) {
+        m_minLevel = Warning;
+    } else if (level == QLatin1String("error")) {
+        m_minLevel = Error;
+    }
+
+    // QARCHIVER_NO_QT_LOG=1 keeps Qt's default message handler.
+    // QARCHIVER_NO_QT_LOG=1 时保留 Qt 默认的消息处理。
+    if (!qEnvironmentVariableIsSet("QARCHIVER_NO_QT_LOG")) {
+        qInstallMessageHandler(&qtMessageHandler);
     }
 }
 
@@ -31,6 +98,17 @@ void Logger::setMinLevel(Level lvl)
 {
     QMutexLocker locker(&m_mutex);
     m_minLevel = lvl;
+}
+
+const char *Logger::levelName() const
+{
+    switch (m_minLevel) {
+    case Debug:   return "debug";
+    case Info:    return "info";
+    case Warning: return "warning";
+    case Error:   return "error";
+    }
+    return "info";
 }
 
 void Logger::setLogFile(const QString &path)
@@ -66,7 +144,7 @@ void Logger::log(Level lvl, const QString &tag, const QString &msg)
     }
 
     const QString line = QString("[%1] [%2] [%3] %4\n")
-        .arg(QDateTime::currentDateTime().toString(Qt::ISODate))
+        .arg(QDateTime::currentDateTime().toString(Qt::ISODateWithMs))
         .arg(levelStr)
         .arg(tag)
         .arg(msg);
